@@ -5,5 +5,14 @@ version.workspace = true
 
 [dependencies]
 cm-core = { workspace = true }
+cm-oms = { path = "../oms" }
+cm-market-data = { path = "../market-data" }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
