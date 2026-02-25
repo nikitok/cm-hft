@@ -13,6 +13,8 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
+config = { version = "0.14", features = ["toml"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = "3"

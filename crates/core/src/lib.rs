@@ -7,5 +7,6 @@
 //! nanosecond timestamps, normalized market data structures, and the logging
 //! framework.
 
+pub mod config;
 pub mod logging;
 pub mod types;
