@@ -3,6 +3,27 @@ name = "cm-pybridge"
 edition.workspace = true
 version.workspace = true
 
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-cm-core = { workspace = true }
+cm-core = { path = "../core" }
+cm-strategy = { path = "../strategy" }
+cm-market-data = { path = "../market-data" }
+cm-oms = { path = "../oms" }
+tokio = { workspace = true }
+tracing = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+arrow = { version = "53", features = ["prettyprint"] }
+parquet = { version = "53", features = ["arrow"] }
+pyo3 = { version = "0.22" }
+rand = "0.8"
+
+[lib]
+name = "cm_pybridge"
+crate-type = ["cdylib", "rlib"]
