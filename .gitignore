@@ -1,1 +1,38 @@
-/.idea/
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Data
+*.parquet
+data/
+
+# Infrastructure
+questdb-data/
+redis-data/
+minio-data/
+
+# OS
+.DS_Store
+Thumbs.db

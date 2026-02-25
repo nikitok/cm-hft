@@ -1,0 +1,8 @@
+[package]
+name = "cm-pybridge"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cm-core = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "cm-strategy"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cm-core = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

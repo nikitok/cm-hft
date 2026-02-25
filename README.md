@@ -110,10 +110,10 @@ The market data handler is the first point of contact with exchange data. Every 
 pub struct NormalizedTick {
     pub exchange: Exchange,
     pub symbol: Symbol,
-    pub bid: Decimal,
-    pub ask: Decimal,
-    pub bid_qty: Decimal,
-    pub ask_qty: Decimal,
+    pub bid: Price,       // Fixed-point: i64 mantissa + u8 scale. No floating-point on hot path.
+    pub ask: Price,
+    pub bid_qty: Quantity, // Same fixed-point approach.
+    pub ask_qty: Quantity,
     pub timestamp_ns: u64,
 }
 ```

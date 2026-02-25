@@ -1,0 +1,51 @@
+services:
+  questdb:
+    image: questdb/questdb:8.2.1
+    ports:
+      - "9000:9000"   # Web console
+      - "9009:9009"   # ILP ingestion
+      - "8812:8812"   # PostgreSQL wire protocol
+    volumes:
+      - questdb-data:/var/lib/questdb
+    environment:
+      - QDB_LOG_W_STDOUT_LEVEL=ERROR
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9100:9000"   # API (shifted to avoid conflict with QuestDB)
+      - "9101:9001"   # Console
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  questdb-data:
+  redis-data:
+  minio-data:

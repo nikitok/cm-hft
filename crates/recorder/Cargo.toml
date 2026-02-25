@@ -1,0 +1,10 @@
+[package]
+name = "cm-recorder"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cm-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
