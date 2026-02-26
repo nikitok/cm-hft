@@ -3,6 +3,10 @@ name = "cm-trading"
 edition.workspace = true
 version.workspace = true
 
+[lib]
+name = "cm_trading"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cm-trading"
 path = "src/main.rs"
@@ -26,6 +30,9 @@ clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 parking_lot = "0.12"
 async-trait = "0.1"
+dashmap = "6"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+crossbeam = { workspace = true }
+dashmap = "6"

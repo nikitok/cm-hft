@@ -1,4 +1,4 @@
-//! Event loop: strategy thread + action processor.
+//! Event loop: strategy thread + fill processor + action processor.
 //!
 //! The strategy runs on a dedicated OS thread (not a tokio task) to avoid
 //! jitter from the async runtime. Communication with the async world happens
@@ -19,10 +19,11 @@ use cm_strategy::context::OrderAction;
 use cm_strategy::traits::{Fill, Strategy};
 use cm_strategy::TradingContext;
 
+use crate::engine::SharedState;
+use crate::paper_executor::RawFill;
+
 /// Simple monotonic counter for book update IDs.
 static BOOK_UPDATE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-use crate::engine::SharedState;
 
 /// Events delivered to the strategy thread.
 #[derive(Debug)]
@@ -34,10 +35,14 @@ pub enum MarketDataEvent {
         book_update: BookUpdate,
     },
     /// Individual trade.
-    Trade(cm_core::types::Trade),
+    Trade(Trade),
     /// Periodic timer tick.
     Timer(Timestamp),
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Strategy loop — dedicated OS thread
+// ────────────────────────────────────────────────────────────────────
 
 /// Strategy loop — runs on a dedicated OS thread.
 ///
@@ -108,24 +113,22 @@ pub fn strategy_loop(
                 book_update,
             } => {
                 let key = (exchange, symbol.clone());
-                let book = books.entry(key).or_insert_with(|| {
-                    OrderBook::new(exchange, symbol.clone())
-                });
+                let book = books
+                    .entry(key)
+                    .or_insert_with(|| OrderBook::new(exchange, symbol.clone()));
 
                 if book_update.is_snapshot {
                     let bids: Vec<_> = book_update.bids.iter().map(|(p, q)| (*p, *q)).collect();
                     let asks: Vec<_> = book_update.asks.iter().map(|(p, q)| (*p, *q)).collect();
                     book.apply_snapshot(&bids, &asks, 1);
                 } else {
-                    let uid = BOOK_UPDATE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let uid =
+                        BOOK_UPDATE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = book.apply_update(&book_update, uid);
                 }
 
-                let mut ctx = TradingContext::new(
-                    positions,
-                    open_orders,
-                    book_update.timestamp,
-                );
+                let mut ctx =
+                    TradingContext::new(positions, open_orders, book_update.timestamp);
                 strategy.on_book_update(&mut ctx, book);
                 let actions = ctx.drain_actions();
                 if !actions.is_empty() {
@@ -133,11 +136,7 @@ pub fn strategy_loop(
                 }
             }
             MarketDataEvent::Trade(trade) => {
-                let mut ctx = TradingContext::new(
-                    positions,
-                    open_orders,
-                    trade.timestamp,
-                );
+                let mut ctx = TradingContext::new(positions, open_orders, trade.timestamp);
                 strategy.on_trade(&mut ctx, &trade);
                 let actions = ctx.drain_actions();
                 if !actions.is_empty() {
@@ -158,6 +157,116 @@ pub fn strategy_loop(
     tracing::info!("strategy thread stopped");
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Fill processor — tokio task
+// ────────────────────────────────────────────────────────────────────
+
+/// Fill processor — resolves `RawFill` (from executor) into `Fill` with the
+/// correct `OrderId`, updates OMS and PositionTracker, then forwards to
+/// strategy thread.
+pub async fn fill_processor(
+    state: Arc<SharedState>,
+    raw_fill_rx: Receiver<RawFill>,
+    fill_tx: Sender<Fill>,
+    cancel: CancellationToken,
+) {
+    tracing::info!("fill processor started");
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let raw = {
+            let rx = raw_fill_rx.clone();
+            tokio::task::spawn_blocking(move || {
+                rx.recv_timeout(std::time::Duration::from_millis(100))
+            })
+            .await
+        };
+
+        let raw = match raw {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => continue,
+            Err(_) => break,
+        };
+
+        // Resolve internal OrderId from client_order_id
+        let order_id = match state.order_id_map.get(&raw.client_order_id) {
+            Some(entry) => *entry.value(),
+            None => {
+                tracing::warn!(
+                    client_order_id = %raw.client_order_id,
+                    "fill for unknown client_order_id — dropping"
+                );
+                continue;
+            }
+        };
+
+        // Determine if this is a full fill
+        let is_full = state
+            .order_manager
+            .get_order(&order_id)
+            .map(|o| {
+                let remaining = o.quantity.to_f64() - o.filled_quantity.to_f64();
+                raw.quantity.to_f64() >= remaining - 1e-12
+            })
+            .unwrap_or(true);
+
+        // Update OMS
+        if let Err(e) =
+            state
+                .order_manager
+                .on_fill(order_id, raw.price, raw.quantity, is_full)
+        {
+            tracing::error!(order_id = %order_id, error = %e, "OMS on_fill failed");
+        }
+
+        // Update PositionTracker
+        state.position_tracker.on_fill(
+            raw.exchange,
+            raw.symbol.clone(),
+            raw.side,
+            raw.price,
+            raw.quantity,
+        );
+
+        // Remove pending if fully filled
+        if is_full {
+            state.position_tracker.remove_pending(&order_id);
+        }
+
+        // Forward resolved Fill to strategy
+        let fill = Fill {
+            order_id,
+            exchange: raw.exchange,
+            symbol: raw.symbol,
+            side: raw.side,
+            price: raw.price,
+            quantity: raw.quantity,
+            timestamp: raw.timestamp,
+            is_maker: raw.is_maker,
+        };
+
+        tracing::debug!(
+            order_id = %order_id,
+            side = ?fill.side,
+            price = %fill.price,
+            qty = %fill.quantity,
+            maker = fill.is_maker,
+            "fill processed"
+        );
+
+        let _ = fill_tx.send(fill);
+    }
+
+    tracing::info!("fill processor stopped");
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Action processor — tokio task
+// ────────────────────────────────────────────────────────────────────
+
 /// Action processor — runs as a tokio task.
 ///
 /// Reads order actions from the strategy thread, runs risk checks, registers
@@ -166,7 +275,6 @@ pub async fn action_processor(
     state: Arc<SharedState>,
     executor: Arc<dyn ExchangeGateway>,
     action_rx: Receiver<Vec<OrderAction>>,
-    fill_tx: Sender<Fill>,
     cancel: CancellationToken,
 ) {
     tracing::info!("action processor started");
@@ -179,7 +287,6 @@ pub async fn action_processor(
         // Bridge from crossbeam to tokio
         let actions = {
             let rx = action_rx.clone();
-            let cancel = cancel.clone();
             tokio::task::spawn_blocking(move || {
                 rx.recv_timeout(std::time::Duration::from_millis(100))
             })
@@ -188,8 +295,8 @@ pub async fn action_processor(
 
         let actions = match actions {
             Ok(Ok(actions)) => actions,
-            Ok(Err(_)) => continue, // timeout or disconnected
-            Err(_) => break,        // join error
+            Ok(Err(_)) => continue,
+            Err(_) => break,
         };
 
         for action in actions {
@@ -209,16 +316,13 @@ pub async fn action_processor(
                     }
 
                     // Generate IDs
+                    let order_id = state.next_oid();
                     let client_order_id = state.fill_dedup.next_client_order_id();
-                    let order_id = OrderId(
-                        state
-                            .fill_dedup
-                            .next_client_order_id()
-                            .split('_')
-                            .last()
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(0),
-                    );
+
+                    // Register mapping for fill resolution
+                    state
+                        .order_id_map
+                        .insert(client_order_id.clone(), order_id);
 
                     // Create OMS order
                     let order = Order {
@@ -240,8 +344,8 @@ pub async fn action_processor(
                     // Risk check
                     let risk_ctx = RiskContext {
                         position_tracker: &state.position_tracker,
-                        current_mid_price: None, // TODO: pass mid price
-                        daily_pnl: 0.0,          // TODO: track daily PnL
+                        current_mid_price: None, // TODO: pass mid price from latest book
+                        daily_pnl: 0.0,          // TODO: aggregate from position tracker
                         open_order_count: state.order_manager.get_open_orders().len(),
                     };
 
@@ -251,12 +355,14 @@ pub async fn action_processor(
                             reason = %reject,
                             "order rejected by risk pipeline"
                         );
+                        state.order_id_map.remove(&client_order_id);
                         continue;
                     }
 
                     // Register in OMS
                     if let Err(e) = state.order_manager.submit(order) {
                         tracing::error!(error = %e, "failed to submit order to OMS");
+                        state.order_id_map.remove(&client_order_id);
                         continue;
                     }
                     if let Err(e) = state.order_manager.on_sent(order_id) {
@@ -282,7 +388,6 @@ pub async fn action_processor(
 
                     let om = state.order_manager.clone();
                     let pt = state.position_tracker.clone();
-                    let _ft = fill_tx.clone();
                     let exec = executor.clone();
                     tokio::spawn(async move {
                         match exec.place_order(&new_order).await {
@@ -352,12 +457,12 @@ pub async fn action_processor(
                                 let exec = executor.clone();
                                 let om = state.order_manager.clone();
                                 let pt = state.position_tracker.clone();
-                                let exchange = order.exchange;
+                                let exch = order.exchange;
                                 let sym = order.symbol.0.clone();
                                 let eid_str = eid.0.clone();
                                 let oid = order.id;
                                 tokio::spawn(async move {
-                                    match exec.cancel_order(exchange, &sym, &eid_str).await {
+                                    match exec.cancel_order(exch, &sym, &eid_str).await {
                                         Ok(_) => {
                                             let _ = om.on_cancel_ack(oid);
                                             pt.remove_pending(&oid);

@@ -4,14 +4,16 @@
 //! order manager, risk pipeline) and spawns the event loop, HTTP server, and
 //! market data feed tasks.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use dashmap::DashMap;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
 use cm_core::config::{AppConfig, TradingMode};
-use cm_core::types::{Symbol, Timestamp};
+use cm_core::types::{OrderId, Symbol, Timestamp};
 use cm_execution::gateway::ExchangeGateway;
 use cm_oms::{FillDeduplicator, OrderManager, PositionTracker};
 use cm_risk::{
@@ -22,7 +24,7 @@ use cm_strategy::traits::Fill;
 use cm_strategy::{default_registry, StrategyParams};
 
 use crate::event_loop;
-use crate::paper_executor::PaperExecutor;
+use crate::paper_executor::{PaperExecutor, RawFill};
 use crate::server;
 
 /// Shared state accessible by all engine components.
@@ -34,6 +36,17 @@ pub struct SharedState {
     pub risk_pipeline: Arc<RiskPipeline>,
     pub executor: Arc<dyn ExchangeGateway>,
     pub config: AppConfig,
+    /// Maps `client_order_id` → internal `OrderId` for fill resolution.
+    pub order_id_map: DashMap<String, OrderId>,
+    /// Monotonic counter for generating internal `OrderId`s.
+    pub next_order_id: AtomicU64,
+}
+
+impl SharedState {
+    /// Allocate the next internal OrderId.
+    pub fn next_oid(&self) -> OrderId {
+        OrderId(self.next_order_id.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 /// The main trading engine.
@@ -44,9 +57,6 @@ pub struct TradingEngine {
 
 impl TradingEngine {
     /// Build a new engine from configuration.
-    ///
-    /// Resolves the executor (paper vs live), builds the risk pipeline, and
-    /// instantiates all shared state.
     pub async fn new(config: AppConfig) -> Result<Self> {
         let circuit_breaker = Arc::new(CircuitBreaker::new());
         let position_tracker = Arc::new(PositionTracker::new());
@@ -78,14 +88,10 @@ impl TradingEngine {
         });
         let risk_pipeline = Arc::new(pipeline);
 
-        // Build executor based on trading mode
-        // For now we create a dummy fill channel; the real one is set up in run()
+        // Placeholder executor — real one is built in run() with the fill channel
         let executor: Arc<dyn ExchangeGateway> = match config.trading.mode {
             TradingMode::Paper => {
-                // We'll create the real PaperExecutor in run() so it has the
-                // correct fill channel. For now, store a placeholder config.
-                // Actually, we need the fill_tx here. Let's create it now.
-                let (fill_tx, _fill_rx) = crossbeam::channel::unbounded::<Fill>();
+                let (fill_tx, _) = crossbeam::channel::unbounded::<RawFill>();
                 Arc::new(PaperExecutor::new(config.paper.clone(), fill_tx))
             }
             TradingMode::Live => {
@@ -101,6 +107,8 @@ impl TradingEngine {
             risk_pipeline,
             executor,
             config,
+            order_id_map: DashMap::new(),
+            next_order_id: AtomicU64::new(1),
         });
 
         Ok(Self {
@@ -119,12 +127,15 @@ impl TradingEngine {
         // ── Channels ─────────────────────────────────────────────
         let (md_tx, md_rx) = crossbeam::channel::bounded::<event_loop::MarketDataEvent>(4096);
         let (action_tx, action_rx) = crossbeam::channel::bounded::<Vec<cm_strategy::OrderAction>>(1024);
+        // Raw fills from executor → fill processor
+        let (raw_fill_tx, raw_fill_rx) = crossbeam::channel::unbounded::<RawFill>();
+        // Resolved fills from fill processor → strategy thread
         let (fill_tx, fill_rx) = crossbeam::channel::unbounded::<Fill>();
 
-        // ── Rebuild executor with the real fill channel ──────────
+        // ── Build executor with the real fill channel ────────────
         let executor: Arc<dyn ExchangeGateway> = match config.trading.mode {
             TradingMode::Paper => {
-                Arc::new(PaperExecutor::new(config.paper.clone(), fill_tx.clone()))
+                Arc::new(PaperExecutor::new(config.paper.clone(), raw_fill_tx.clone()))
             }
             TradingMode::Live => {
                 bail!("Live trading mode not yet implemented");
@@ -140,6 +151,8 @@ impl TradingEngine {
             risk_pipeline: self.state.risk_pipeline.clone(),
             executor: executor.clone(),
             config: config.clone(),
+            order_id_map: DashMap::new(),
+            next_order_id: AtomicU64::new(1),
         });
 
         // ── Strategy instantiation ───────────────────────────────
@@ -177,17 +190,12 @@ impl TradingEngine {
         });
 
         // ── 2. Market data feeds ─────────────────────────────────
-        // For each symbol, spawn WS feed tasks that send to md_tx.
-        // In paper mode, also call PaperExecutor::update_market_data().
         for symbol in &config.market_data.symbols {
-            let md_tx = md_tx.clone();
             let symbol = Symbol::new(symbol.clone());
             let cancel = cancel.clone();
 
             tracing::info!(%symbol, "subscribing to market data");
 
-            // Spawn a simulated feed that sends timer events
-            // (Real WS feeds would be spawned here; for now we just log)
             let sym = symbol.clone();
             tokio::spawn(async move {
                 tracing::info!(%sym, "market data feed task started (connect WS here)");
@@ -211,7 +219,16 @@ impl TradingEngine {
             }
         });
 
-        // ── 4. Strategy thread (dedicated OS thread) ─────────────
+        // ── 4. Fill processor (tokio task) ───────────────────────
+        // Reads RawFill from executor, resolves OrderId, updates OMS +
+        // PositionTracker, forwards resolved Fill to strategy thread.
+        let fill_state = state.clone();
+        let fill_cancel = cancel.clone();
+        tokio::spawn(async move {
+            event_loop::fill_processor(fill_state, raw_fill_rx, fill_tx, fill_cancel).await;
+        });
+
+        // ── 5. Strategy thread (dedicated OS thread) ─────────────
         let strat_state = state.clone();
         let strat_cancel = cancel.clone();
         let strat_handle = std::thread::Builder::new()
@@ -227,17 +244,15 @@ impl TradingEngine {
                 );
             })?;
 
-        // ── 5. Action processor (tokio task) ─────────────────────
+        // ── 6. Action processor (tokio task) ─────────────────────
         let proc_state = state.clone();
         let proc_executor = executor.clone();
-        let proc_fill_tx = fill_tx;
         let proc_cancel = cancel.clone();
         tokio::spawn(async move {
             event_loop::action_processor(
                 proc_state,
                 proc_executor,
                 action_rx,
-                proc_fill_tx,
                 proc_cancel,
             )
             .await;
@@ -255,7 +270,6 @@ impl TradingEngine {
 
         cancel.cancel();
 
-        // Wait for strategy thread to finish
         let _ = strat_handle.join();
 
         tracing::info!("engine stopped");

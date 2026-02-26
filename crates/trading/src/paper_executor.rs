@@ -16,25 +16,36 @@ use cm_core::config::PaperConfig;
 use cm_core::types::*;
 use cm_execution::gateway::{AmendAck, CancelAck, ExchangeGateway, NewOrder, OrderAck};
 use cm_market_data::orderbook::OrderBook;
-use cm_strategy::traits::Fill;
+
+/// A raw fill from the paper executor, carrying the `client_order_id` so the
+/// engine can resolve the internal `OrderId`.
+#[derive(Debug, Clone)]
+pub struct RawFill {
+    pub client_order_id: String,
+    pub exchange: Exchange,
+    pub symbol: Symbol,
+    pub side: Side,
+    pub price: Price,
+    pub quantity: Quantity,
+    pub timestamp: Timestamp,
+    pub is_maker: bool,
+}
 
 /// A resting order in the paper executor.
 #[derive(Debug, Clone)]
 struct RestingOrder {
-    exchange_id: String,
     client_order_id: String,
     exchange: Exchange,
     symbol: Symbol,
     side: Side,
     price: Price,
-    quantity: Quantity,
     remaining: Quantity,
 }
 
 /// Paper trading executor that simulates fills against live market data.
 pub struct PaperExecutor {
     config: PaperConfig,
-    fill_tx: Sender<Fill>,
+    fill_tx: Sender<RawFill>,
     next_id: AtomicU64,
     /// Resting bid orders keyed by exchange_id.
     resting_bids: Mutex<BTreeMap<String, RestingOrder>>,
@@ -48,7 +59,7 @@ pub struct PaperExecutor {
 
 impl PaperExecutor {
     /// Create a new paper executor.
-    pub fn new(config: PaperConfig, fill_tx: Sender<Fill>) -> Self {
+    pub fn new(config: PaperConfig, fill_tx: Sender<RawFill>) -> Self {
         Self {
             config,
             fill_tx,
@@ -84,18 +95,17 @@ impl PaperExecutor {
                 if available <= 0.0 {
                     break;
                 }
-                // Bid crosses if bid_price >= ask_price
                 if order.price >= ask_price {
                     let remaining_f64 = order.remaining.to_f64();
                     let fill_qty = remaining_f64.min(available);
                     available -= fill_qty;
 
-                    let _ = self.fill_tx.send(Fill {
-                        order_id: OrderId(0), // Will be mapped by engine
+                    let _ = self.fill_tx.send(RawFill {
+                        client_order_id: order.client_order_id.clone(),
                         exchange: order.exchange,
                         symbol: order.symbol.clone(),
                         side: Side::Buy,
-                        price: order.price, // Fill at resting price (maker)
+                        price: order.price,
                         quantity: Quantity::from(fill_qty),
                         timestamp: Timestamp::now(),
                         is_maker: true,
@@ -124,14 +134,13 @@ impl PaperExecutor {
                 if available <= 0.0 {
                     break;
                 }
-                // Ask crosses if ask_price <= bid_price
                 if order.price <= bid_price {
                     let remaining_f64 = order.remaining.to_f64();
                     let fill_qty = remaining_f64.min(available);
                     available -= fill_qty;
 
-                    let _ = self.fill_tx.send(Fill {
-                        order_id: OrderId(0),
+                    let _ = self.fill_tx.send(RawFill {
+                        client_order_id: order.client_order_id.clone(),
                         exchange: order.exchange,
                         symbol: order.symbol.clone(),
                         side: Side::Sell,
@@ -158,48 +167,40 @@ impl PaperExecutor {
 #[async_trait]
 impl ExchangeGateway for PaperExecutor {
     async fn place_order(&self, order: &NewOrder) -> Result<OrderAck> {
-        // Simulate network latency
         tokio::time::sleep(Duration::from_millis(self.config.latency_ms)).await;
 
         let exchange_id = self.next_exchange_id();
 
-        // Check for immediate fill (market order or crossing limit)
         let immediate_fill = match order.order_type {
             OrderType::Market => true,
-            OrderType::Limit | OrderType::PostOnly => {
-                match order.side {
-                    Side::Buy => {
-                        // Buy crosses if bid_price >= best_ask
-                        let ask = self.best_ask.lock().clone();
-                        ask.map_or(false, |(ask_price, _)| order.price >= ask_price)
-                    }
-                    Side::Sell => {
-                        let bid = self.best_bid.lock().clone();
-                        bid.map_or(false, |(bid_price, _)| order.price <= bid_price)
-                    }
+            OrderType::Limit | OrderType::PostOnly => match order.side {
+                Side::Buy => {
+                    let ask = self.best_ask.lock().clone();
+                    ask.map_or(false, |(ask_price, _)| order.price >= ask_price)
                 }
-            }
+                Side::Sell => {
+                    let bid = self.best_bid.lock().clone();
+                    bid.map_or(false, |(bid_price, _)| order.price <= bid_price)
+                }
+            },
         };
 
         if immediate_fill {
-            // Taker fill at the book price
             let fill_price = match order.side {
-                Side::Buy => {
-                    self.best_ask
-                        .lock()
-                        .map(|(p, _)| p)
-                        .unwrap_or(order.price)
-                }
-                Side::Sell => {
-                    self.best_bid
-                        .lock()
-                        .map(|(p, _)| p)
-                        .unwrap_or(order.price)
-                }
+                Side::Buy => self
+                    .best_ask
+                    .lock()
+                    .map(|(p, _)| p)
+                    .unwrap_or(order.price),
+                Side::Sell => self
+                    .best_bid
+                    .lock()
+                    .map(|(p, _)| p)
+                    .unwrap_or(order.price),
             };
 
-            let _ = self.fill_tx.send(Fill {
-                order_id: OrderId(0), // Mapped by engine
+            let _ = self.fill_tx.send(RawFill {
+                client_order_id: order.client_order_id.clone(),
                 exchange: order.exchange,
                 symbol: order.symbol.clone(),
                 side: order.side,
@@ -209,15 +210,12 @@ impl ExchangeGateway for PaperExecutor {
                 is_maker: false,
             });
         } else {
-            // Rest as a maker order
             let resting = RestingOrder {
-                exchange_id: exchange_id.clone(),
                 client_order_id: order.client_order_id.clone(),
                 exchange: order.exchange,
                 symbol: order.symbol.clone(),
                 side: order.side,
                 price: order.price,
-                quantity: order.quantity,
                 remaining: order.quantity,
             };
 
@@ -263,11 +261,7 @@ impl ExchangeGateway for PaperExecutor {
         _new_price: Option<Price>,
         _new_qty: Option<Quantity>,
     ) -> Result<AmendAck> {
-        // Cancel + re-submit approach
         self.cancel_order(exchange, symbol, order_id).await?;
-
-        // If we had the original order info we'd re-submit, but for amend
-        // we just acknowledge. The engine handles the re-submit logic.
         Ok(AmendAck {
             order_id: order_id.to_string(),
         })
@@ -293,7 +287,6 @@ mod tests {
         let (fill_tx, fill_rx) = channel::unbounded();
         let executor = PaperExecutor::new(make_config(), fill_tx);
 
-        // Set best ask
         *executor.best_ask.lock() = Some((Price::from(50000.0), Quantity::from(1.0)));
 
         let order = NewOrder {
@@ -312,6 +305,7 @@ mod tests {
         let fill = fill_rx.try_recv().unwrap();
         assert_eq!(fill.side, Side::Buy);
         assert!(!fill.is_maker);
+        assert_eq!(fill.client_order_id, "test-001");
     }
 
     #[tokio::test]
@@ -319,10 +313,8 @@ mod tests {
         let (fill_tx, fill_rx) = channel::unbounded();
         let executor = PaperExecutor::new(make_config(), fill_tx);
 
-        // Best ask at 50000
         *executor.best_ask.lock() = Some((Price::from(50000.0), Quantity::from(1.0)));
 
-        // Buy limit below best ask → should rest
         let order = NewOrder {
             exchange: Exchange::Binance,
             symbol: Symbol::new("BTCUSDT"),
@@ -334,7 +326,7 @@ mod tests {
         };
 
         executor.place_order(&order).await.unwrap();
-        assert!(fill_rx.try_recv().is_err()); // No immediate fill
+        assert!(fill_rx.try_recv().is_err());
         assert_eq!(executor.resting_bids.lock().len(), 1);
     }
 
@@ -343,7 +335,6 @@ mod tests {
         let (fill_tx, fill_rx) = channel::unbounded();
         let executor = PaperExecutor::new(make_config(), fill_tx);
 
-        // Place resting bid at 50000
         *executor.best_ask.lock() = Some((Price::from(50001.0), Quantity::from(1.0)));
         let order = NewOrder {
             exchange: Exchange::Binance,
@@ -357,7 +348,6 @@ mod tests {
         executor.place_order(&order).await.unwrap();
         assert!(fill_rx.try_recv().is_err());
 
-        // Book update with ask crossing down to 50000
         let mut book = OrderBook::new(Exchange::Binance, Symbol::new("BTCUSDT"));
         book.apply_snapshot(
             &[(Price::from(49999.0), Quantity::from(1.0))],
@@ -369,6 +359,7 @@ mod tests {
         let fill = fill_rx.try_recv().unwrap();
         assert_eq!(fill.side, Side::Buy);
         assert!(fill.is_maker);
+        assert_eq!(fill.client_order_id, "test-003");
     }
 
     #[tokio::test]

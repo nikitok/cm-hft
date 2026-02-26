@@ -3,16 +3,12 @@
 //! Entry point for the paper and live trading engine. Loads configuration,
 //! initializes tracing, and starts the [`TradingEngine`].
 
-mod engine;
-mod event_loop;
-mod paper_executor;
-mod server;
-
 use std::path::PathBuf;
 
 use clap::Parser;
 
 use cm_core::config::AppConfig;
+use cm_trading::engine::TradingEngine;
 
 /// CM.HFT Trading Engine
 #[derive(Parser, Debug)]
@@ -37,6 +33,6 @@ async fn main() -> anyhow::Result<()> {
         "starting cm-trading"
     );
 
-    let engine = engine::TradingEngine::new(config).await?;
+    let engine = TradingEngine::new(config).await?;
     engine.run().await
 }
