@@ -342,10 +342,14 @@ pub async fn action_processor(
                     };
 
                     // Risk check
+                    let mid_price = state
+                        .mid_prices
+                        .get(&(exchange, symbol.clone()))
+                        .map(|e| *e.value());
                     let risk_ctx = RiskContext {
                         position_tracker: &state.position_tracker,
-                        current_mid_price: None, // TODO: pass mid price from latest book
-                        daily_pnl: 0.0,          // TODO: aggregate from position tracker
+                        current_mid_price: mid_price,
+                        daily_pnl: state.daily_pnl(),
                         open_order_count: state.order_manager.get_open_orders().len(),
                     };
 

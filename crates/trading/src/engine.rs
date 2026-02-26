@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use dashmap::DashMap;
@@ -13,8 +14,9 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
 use cm_core::config::{AppConfig, TradingMode};
-use cm_core::types::{OrderId, Symbol, Timestamp};
+use cm_core::types::{Exchange, OrderId, Price, Symbol, Timestamp};
 use cm_execution::gateway::ExchangeGateway;
+use cm_market_data::ws::ReconnectConfig as WsReconnectConfig;
 use cm_oms::{FillDeduplicator, OrderManager, PositionTracker};
 use cm_risk::{
     CircuitBreaker, DrawdownCheck, FatFingerCheck, MaxOrderSizeCheck,
@@ -26,6 +28,7 @@ use cm_strategy::{default_registry, StrategyParams};
 use crate::event_loop;
 use crate::paper_executor::{PaperExecutor, RawFill};
 use crate::server;
+use crate::ws_feeds;
 
 /// Shared state accessible by all engine components.
 pub struct SharedState {
@@ -40,12 +43,33 @@ pub struct SharedState {
     pub order_id_map: DashMap<String, OrderId>,
     /// Monotonic counter for generating internal `OrderId`s.
     pub next_order_id: AtomicU64,
+    /// Latest mid price per (exchange, symbol), updated by WS feed tasks.
+    pub mid_prices: DashMap<(Exchange, Symbol), Price>,
 }
 
 impl SharedState {
     /// Allocate the next internal OrderId.
     pub fn next_oid(&self) -> OrderId {
         OrderId(self.next_order_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Total daily PnL (realized + unrealized) across all positions.
+    pub fn daily_pnl(&self) -> f64 {
+        let positions = self.position_tracker.all_positions();
+        let mut total = 0.0;
+        for pos in &positions {
+            total += pos.realized_pnl.to_f64();
+            if let Some(mid_entry) = self.mid_prices.get(&(pos.exchange, pos.symbol.clone())) {
+                let mid = *mid_entry.value();
+                let unrealized = self.position_tracker.unrealized_pnl(
+                    &pos.exchange,
+                    &pos.symbol,
+                    mid,
+                );
+                total += unrealized.to_f64();
+            }
+        }
+        total
     }
 }
 
@@ -109,6 +133,7 @@ impl TradingEngine {
             config,
             order_id_map: DashMap::new(),
             next_order_id: AtomicU64::new(1),
+            mid_prices: DashMap::new(),
         });
 
         Ok(Self {
@@ -133,14 +158,19 @@ impl TradingEngine {
         let (fill_tx, fill_rx) = crossbeam::channel::unbounded::<Fill>();
 
         // ── Build executor with the real fill channel ────────────
-        let executor: Arc<dyn ExchangeGateway> = match config.trading.mode {
-            TradingMode::Paper => {
-                Arc::new(PaperExecutor::new(config.paper.clone(), raw_fill_tx.clone()))
-            }
-            TradingMode::Live => {
-                bail!("Live trading mode not yet implemented");
-            }
-        };
+        let (executor, paper_executor): (Arc<dyn ExchangeGateway>, Option<Arc<PaperExecutor>>) =
+            match config.trading.mode {
+                TradingMode::Paper => {
+                    let pe = Arc::new(PaperExecutor::new(
+                        config.paper.clone(),
+                        raw_fill_tx.clone(),
+                    ));
+                    (pe.clone() as Arc<dyn ExchangeGateway>, Some(pe))
+                }
+                TradingMode::Live => {
+                    bail!("Live trading mode not yet implemented");
+                }
+            };
 
         // Rebuild shared state with real executor
         let state = Arc::new(SharedState {
@@ -153,6 +183,7 @@ impl TradingEngine {
             config: config.clone(),
             order_id_map: DashMap::new(),
             next_order_id: AtomicU64::new(1),
+            mid_prices: DashMap::new(),
         });
 
         // ── Strategy instantiation ───────────────────────────────
@@ -190,17 +221,56 @@ impl TradingEngine {
         });
 
         // ── 2. Market data feeds ─────────────────────────────────
-        for symbol in &config.market_data.symbols {
-            let symbol = Symbol::new(symbol.clone());
-            let cancel = cancel.clone();
+        let ws_reconnect = WsReconnectConfig {
+            initial_backoff: Duration::from_millis(
+                config.market_data.reconnect.initial_backoff_ms,
+            ),
+            max_backoff: Duration::from_millis(config.market_data.reconnect.max_backoff_ms),
+            max_retries: config.market_data.reconnect.max_retries,
+            alert_after: 5,
+        };
 
-            tracing::info!(%symbol, "subscribing to market data");
-
-            let sym = symbol.clone();
+        // 2a. Binance feed
+        {
+            let binance_md_tx = md_tx.clone();
+            let binance_state = state.clone();
+            let binance_cancel = cancel.clone();
+            let binance_config = config.binance.clone();
+            let binance_symbols = config.market_data.symbols.clone();
+            let binance_pe = paper_executor.clone();
             tokio::spawn(async move {
-                tracing::info!(%sym, "market data feed task started (connect WS here)");
-                cancel.cancelled().await;
-                tracing::info!(%sym, "market data feed task stopped");
+                ws_feeds::run_binance_feed(
+                    binance_config,
+                    binance_symbols,
+                    binance_md_tx,
+                    binance_state,
+                    binance_pe,
+                    binance_cancel,
+                )
+                .await;
+            });
+        }
+
+        // 2b. Bybit feed
+        {
+            let bybit_md_tx = md_tx.clone();
+            let bybit_state = state.clone();
+            let bybit_cancel = cancel.clone();
+            let bybit_config = config.bybit.clone();
+            let bybit_symbols = config.market_data.symbols.clone();
+            let bybit_pe = paper_executor.clone();
+            let bybit_reconnect = ws_reconnect;
+            tokio::spawn(async move {
+                ws_feeds::run_bybit_feed(
+                    bybit_config,
+                    bybit_reconnect,
+                    bybit_symbols,
+                    bybit_md_tx,
+                    bybit_state,
+                    bybit_pe,
+                    bybit_cancel,
+                )
+                .await;
             });
         }
 

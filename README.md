@@ -354,6 +354,103 @@ These settings reduce tail latency by keeping the NIC active during idle periods
 
 ---
 
+## Paper Trading
+
+The `cm-trading` binary is the entry point for paper (simulated) and live trading. In paper mode, a `PaperExecutor` simulates order fills against live market data without touching real funds.
+
+### Quick Start
+
+```bash
+# Build the binary
+cargo build --release --bin cm-trading
+
+# Run with default config (testnet, paper mode, BTCUSDT)
+./target/release/cm-trading
+
+# Run with a custom config file
+./target/release/cm-trading --config config/default.toml
+```
+
+### Configuration
+
+The engine loads configuration in layers (later overrides earlier):
+
+1. **Compiled-in defaults** — testnet URLs, conservative risk limits
+2. **TOML config file** — passed via `--config path/to/file.toml`
+3. **Environment variables** — prefix `CM_HFT_`, nesting with `__`
+4. **API key env vars** — `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `BYBIT_API_KEY`, `BYBIT_API_SECRET`
+
+Example overrides:
+
+```bash
+# Change risk limits via env
+export CM_HFT_RISK__MAX_POSITION_SIZE=0.5
+export CM_HFT_RISK__MAX_ORDER_SIZE=0.1
+export CM_HFT_RISK__DAILY_LOSS_LIMIT_USD=500.0
+
+# Switch to a different strategy
+export CM_HFT_TRADING__STRATEGY=arb_v2
+
+# Add more symbols
+export CM_HFT_MARKET_DATA__SYMBOLS='["BTCUSDT","ETHUSDT"]'
+```
+
+#### Paper Trading Parameters
+
+Add a `[paper]` section to the TOML config to tune the simulator:
+
+```toml
+[paper]
+latency_ms = 1           # Simulated order latency (ms)
+maker_fee = -0.0001      # Maker fee (-0.01% rebate)
+taker_fee = 0.0004       # Taker fee (0.04%)
+max_fill_fraction = 1.0  # Max fraction of book liquidity to fill against
+```
+
+### Thread Model
+
+```
+Tokio Runtime
+├── [Binance WS] ──┐
+├── [Bybit WS]  ───┼──> md_tx ──> [Strategy Thread] ──> action_tx ──> [Action Processor]
+├── [Timer 100ms] ──┘         <── fill_rx <────────────── fill_tx <──┘
+├── [Fill Processor]                                       │
+├── [HTTP Server :8080]                                    ▼
+│                                          executor.place_order().await
+│                                          (PaperExecutor or real gateway)
+```
+
+- **Strategy thread** — dedicated OS thread (not a tokio task) to avoid async runtime jitter.
+- **WS feed tasks** — maintain local OrderBook per symbol, update PaperExecutor for fill matching, store mid prices for risk checks.
+- **Fill processor** — resolves `client_order_id` → `OrderId`, updates OMS + PositionTracker, forwards to strategy.
+- **Action processor** — runs risk pipeline, registers with OMS, dispatches to executor.
+
+### HTTP Endpoints
+
+The engine exposes an HTTP API on port 8080:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | Health check (`{"status":"ok"}`) |
+| `/status` | GET | Circuit breaker status, trading enabled flag |
+| `/kill` | POST | Activate kill switch — halt all trading |
+| `/reset` | POST | Reset circuit breaker (requires `CM_RESET_TOKEN`) |
+| `/positions` | GET | Current positions (net qty, avg entry, realized PnL) |
+| `/orders` | GET | Open orders |
+| `/metrics` | GET | Prometheus-style metrics |
+
+### Risk Pipeline
+
+Every order passes through these pre-trade checks before reaching the exchange:
+
+1. **MaxPosition** — reject if resulting position exceeds `max_position_size`
+2. **MaxOrderSize** — reject if order size exceeds `max_order_size`
+3. **OrderRateLimit** — enforce per-second and per-minute rate limits
+4. **Drawdown** — reject if daily PnL (realized + unrealized) exceeds `daily_loss_limit_usd`
+5. **FatFinger** — reject if order price deviates more than `fat_finger_bps` from mid
+
+---
+
 ## Anti-patterns to Avoid
 
 These are hard-won lessons. Each one has a direct cost in latency, correctness, or both.
@@ -382,7 +479,8 @@ cm.hft/
 │   ├── risk/           # Pre-trade risk checks
 │   ├── execution/      # Exchange gateways (Binance, Bybit)
 │   ├── recorder/       # Market data recording to QuestDB
-│   └── pybridge/       # PyO3 bindings for backtester
+│   ├── pybridge/       # PyO3 bindings for backtester
+│   └── trading/        # Paper/live trading binary (cm-trading)
 ├── backtest/
 │   ├── engine/         # Python backtesting orchestration
 │   ├── data/           # Data pipeline scripts
