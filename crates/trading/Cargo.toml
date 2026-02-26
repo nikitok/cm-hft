@@ -1,0 +1,31 @@
+[package]
+name = "cm-trading"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "cm-trading"
+path = "src/main.rs"
+
+[dependencies]
+cm-core = { workspace = true }
+cm-market-data = { path = "../market-data" }
+cm-strategy = { path = "../strategy" }
+cm-oms = { path = "../oms" }
+cm-risk = { path = "../risk" }
+cm-execution = { path = "../execution" }
+cm-recorder = { path = "../recorder" }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crossbeam = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+parking_lot = "0.12"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

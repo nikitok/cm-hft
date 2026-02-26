@@ -62,6 +62,26 @@ fn default_flush_interval_ms() -> u64 {
     1_000
 }
 
+/// Default paper-trading simulated latency: 1 ms.
+fn default_paper_latency_ms() -> u64 {
+    1
+}
+
+/// Default paper-trading maker fee: -0.01 % (rebate).
+fn default_paper_maker_fee() -> f64 {
+    -0.0001
+}
+
+/// Default paper-trading taker fee: 0.04 %.
+fn default_paper_taker_fee() -> f64 {
+    0.0004
+}
+
+/// Default paper-trading max fill fraction: 100 %.
+fn default_paper_max_fill_fraction() -> f64 {
+    1.0
+}
+
 // ── Configuration structs ──────────────────────────────────────────────
 
 /// Top-level application configuration.
@@ -82,6 +102,9 @@ pub struct AppConfig {
     pub recorder: RecorderConfig,
     /// Trading mode and strategy selection.
     pub trading: TradingConfig,
+    /// Paper-trading simulation parameters.
+    #[serde(default)]
+    pub paper: PaperConfig,
 }
 
 /// Exchange connection configuration.
@@ -174,6 +197,23 @@ pub struct TradingConfig {
     pub strategy: String,
 }
 
+/// Paper-trading simulation parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaperConfig {
+    /// Simulated order latency in milliseconds.
+    #[serde(default = "default_paper_latency_ms")]
+    pub latency_ms: u64,
+    /// Maker fee rate (negative = rebate). E.g., -0.0001 for -1 bps.
+    #[serde(default = "default_paper_maker_fee")]
+    pub maker_fee: f64,
+    /// Taker fee rate. E.g., 0.0004 for 4 bps.
+    #[serde(default = "default_paper_taker_fee")]
+    pub taker_fee: f64,
+    /// Maximum fraction of available book liquidity to fill against.
+    #[serde(default = "default_paper_max_fill_fraction")]
+    pub max_fill_fraction: f64,
+}
+
 /// Trading mode selector.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -182,6 +222,17 @@ pub enum TradingMode {
     Paper,
     /// Live trading with real funds.
     Live,
+}
+
+impl Default for PaperConfig {
+    fn default() -> Self {
+        Self {
+            latency_ms: default_paper_latency_ms(),
+            maker_fee: default_paper_maker_fee(),
+            taker_fee: default_paper_taker_fee(),
+            max_fill_fraction: default_paper_max_fill_fraction(),
+        }
+    }
 }
 
 impl AppConfig {
@@ -231,7 +282,12 @@ impl AppConfig {
             .set_default("recorder.flush_interval_ms", 1000i64)?
             // Trading
             .set_default("trading.mode", "paper")?
-            .set_default("trading.strategy", "simple_mm")?;
+            .set_default("trading.strategy", "simple_mm")?
+            // Paper trading
+            .set_default("paper.latency_ms", 1i64)?
+            .set_default("paper.maker_fee", -0.0001)?
+            .set_default("paper.taker_fee", 0.0004)?
+            .set_default("paper.max_fill_fraction", 1.0)?;
 
         // ── Layer 2: TOML file ─────────────────────────────────────
         if let Some(path) = config_path {

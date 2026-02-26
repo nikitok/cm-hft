@@ -8,6 +8,7 @@ members = [
     "crates/execution",
     "crates/recorder",
     "crates/pybridge",
+    "crates/trading",
 ]
 resolver = "2"
 
