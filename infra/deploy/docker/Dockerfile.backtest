@@ -1,0 +1,44 @@
+# =============================================================================
+# CM.HFT — Backtesting Docker Image (Python + Rust via maturin)
+# =============================================================================
+# Python 3.12 with Rust toolchain for building the pybridge native extension.
+# maturin compiles the Rust crate into a Python wheel, giving Python code
+# access to the high-performance Rust order matching and risk engine.
+# =============================================================================
+
+FROM python:3.12-slim
+
+# Install build tools required for Rust compilation and maturin
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (needed by maturin to build the pybridge crate)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install maturin for building Rust Python extensions
+RUN pip install --no-cache-dir maturin
+
+WORKDIR /app
+
+# Copy entire project (maturin needs workspace Cargo.toml and crate sources)
+COPY . .
+
+# Build the pybridge Rust extension as a Python wheel
+RUN maturin build --release \
+    --manifest-path crates/pybridge/Cargo.toml \
+    --features extension-module
+
+# Install the built wheel
+RUN pip install --no-cache-dir target/wheels/*.whl
+
+# Install Python dependencies (requirements.txt or fallback to core packages)
+RUN pip install --no-cache-dir -r requirements.txt || \
+    pip install --no-cache-dir numpy polars httpx matplotlib
+
+ENTRYPOINT ["python"]

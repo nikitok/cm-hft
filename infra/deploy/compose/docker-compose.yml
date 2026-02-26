@@ -1,0 +1,214 @@
+# =============================================================================
+# CM.HFT — Production Docker Compose
+# =============================================================================
+# Full deployment stack: trading core, monitoring, observability, and storage.
+#
+# Key design decisions:
+#   - Trading core: restart "no" — manual restart only to prevent uncontrolled
+#     reconnection to exchanges after a crash. Operator must verify state first.
+#   - CPU pinning for trading core: dedicated cores 0-1 to avoid scheduler jitter.
+#   - Two isolated networks: "internal" for trading, "monitoring" for observability.
+#   - All images use pinned versions — no :latest tags.
+#
+# Usage:
+#   cp .env.example .env  # Fill in secrets
+#   docker compose up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Trading Core (Rust)
+  # ---------------------------------------------------------------------------
+  trading-core:
+    build:
+      context: ../../../
+      dockerfile: infra/deploy/docker/Dockerfile.trading
+    container_name: cm-hft-trading-core
+    # IMPORTANT: restart "no" for trading — crash requires manual investigation
+    # before reconnecting to exchanges. Automatic restart risks duplicate orders.
+    restart: "no"
+    cpuset: "0,1"
+    mem_limit: 4g
+    memswap_limit: 4g
+    volumes:
+      - ../../../config:/app/config:ro
+      - trading-logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      questdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/cm-trading", "--health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Monitoring Service (Go)
+  # ---------------------------------------------------------------------------
+  monitoring:
+    build:
+      context: ../../../
+      dockerfile: infra/deploy/docker/Dockerfile.monitoring
+    container_name: cm-hft-monitoring
+    restart: always
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      - METRICS_SOCKET=/tmp/cm_hft_metrics.sock
+    volumes:
+      - /tmp/cm_hft_metrics.sock:/tmp/cm_hft_metrics.sock
+    networks:
+      - internal
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — Metrics Collection
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: cm-hft-prometheus
+    restart: always
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Grafana — Dashboards & Visualization
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: cm-hft-grafana
+    restart: always
+    volumes:
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    ports:
+      - "3000:3000"
+    networks:
+      - monitoring
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Loki — Log Aggregation
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: cm-hft-loki
+    restart: always
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Promtail — Log Shipper (sends logs to Loki)
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: cm-hft-promtail
+    restart: always
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - trading-logs:/var/log/trading:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # QuestDB — Time-Series Database for Market Data & Trades
+  # ---------------------------------------------------------------------------
+  questdb:
+    image: questdb/questdb:7.4.0
+    container_name: cm-hft-questdb
+    restart: always
+    mem_limit: 2g
+    volumes:
+      - questdb-data:/var/lib/questdb
+    ports:
+      - "9000:9000"   # Web console
+      - "8812:8812"   # PostgreSQL wire protocol
+    environment:
+      - QDB_LOG_W_STDOUT_LEVEL=ERROR
+    networks:
+      - internal
+      - monitoring
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Redis — State Cache & Pub/Sub for Kill Switch
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cm-hft-redis
+    restart: always
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Trading components only — isolated from external access
+  internal:
+    driver: bridge
+    name: cm-hft-internal
+
+  # Observability stack — Prometheus, Grafana, Loki, etc.
+  monitoring:
+    driver: bridge
+    name: cm-hft-monitoring
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  trading-logs:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  questdb-data:
+  redis-data:

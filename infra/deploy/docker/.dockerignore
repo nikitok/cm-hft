@@ -1,0 +1,46 @@
+# =============================================================================
+# CM.HFT — Docker Build Ignore
+# =============================================================================
+# Exclude large/sensitive files from the Docker build context.
+# This speeds up builds and avoids leaking secrets into images.
+# =============================================================================
+
+# Rust build artifacts (can be several GB)
+target/
+
+# Git history (not needed in images)
+.git/
+.gitattributes
+.gitignore
+
+# Backtest output data
+backtest_results/
+
+# Large data files
+*.parquet
+*.csv
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python virtual environments
+.venv/
+__pycache__/
+*.pyc
+
+# Terraform state (never include in images)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# OS files
+.DS_Store
+Thumbs.db

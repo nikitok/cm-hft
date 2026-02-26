@@ -1,0 +1,151 @@
+# CM.HFT Prometheus Recording Rules
+# ====================================
+# Pre-computed aggregations for dashboard performance and alerting.
+# These rules reduce query load on Prometheus by materializing
+# frequently used expressions.
+
+groups:
+  # ─────────────────────────────────────────────
+  # PnL aggregations
+  # ─────────────────────────────────────────────
+  - name: cm_pnl_rules
+    interval: 15s
+    rules:
+      # PnL rate over 5 minutes (USD per second)
+      - record: cm:pnl:rate5m
+        expr: rate(cm_pnl_realized_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # Total PnL (realized + unrealized) per exchange/symbol
+      - record: cm:pnl:total
+        expr: cm_pnl_realized_total + cm_pnl_unrealized
+        labels:
+          aggregation: "total"
+
+      # Rolling 1-hour PnL for drawdown detection
+      - record: cm:pnl:delta_1h
+        expr: cm_pnl_realized_total - cm_pnl_realized_total offset 1h
+        labels:
+          aggregation: "delta_1h"
+
+      # Daily PnL reset at midnight UTC (approximation using 24h window)
+      - record: cm:pnl:delta_24h
+        expr: cm_pnl_realized_total - cm_pnl_realized_total offset 24h
+        labels:
+          aggregation: "delta_24h"
+
+  # ─────────────────────────────────────────────
+  # Latency aggregations
+  # ─────────────────────────────────────────────
+  - name: cm_latency_rules
+    interval: 15s
+    rules:
+      # 99th percentile latency over 5 minutes — wire-to-internal
+      - record: cm:latency:p99_5m
+        expr: histogram_quantile(0.99, rate(cm_wire_to_internal_latency_seconds_bucket[5m]))
+        labels:
+          aggregation: "p99_5m"
+
+      # 99.9th percentile latency over 5 minutes
+      - record: cm:latency:p999_5m
+        expr: histogram_quantile(0.999, rate(cm_wire_to_internal_latency_seconds_bucket[5m]))
+        labels:
+          aggregation: "p999_5m"
+
+      # 50th percentile (median) latency over 5 minutes
+      - record: cm:latency:p50_5m
+        expr: histogram_quantile(0.50, rate(cm_wire_to_internal_latency_seconds_bucket[5m]))
+        labels:
+          aggregation: "p50_5m"
+
+      # Order-to-ack p99 over 5 minutes
+      - record: cm:order_ack_latency:p99_5m
+        expr: histogram_quantile(0.99, rate(cm_order_ack_latency_seconds_bucket[5m]))
+        labels:
+          aggregation: "p99_5m"
+
+      # Order-to-ack p50 over 5 minutes
+      - record: cm:order_ack_latency:p50_5m
+        expr: histogram_quantile(0.50, rate(cm_order_ack_latency_seconds_bucket[5m]))
+        labels:
+          aggregation: "p50_5m"
+
+      # Internal processing time p99
+      - record: cm:processing_latency:p99_5m
+        expr: histogram_quantile(0.99, rate(cm_internal_processing_seconds_bucket[5m]))
+        labels:
+          aggregation: "p99_5m"
+
+  # ─────────────────────────────────────────────
+  # Fill rate and order aggregations
+  # ─────────────────────────────────────────────
+  - name: cm_order_rules
+    interval: 15s
+    rules:
+      # Fills per second over 5 minutes
+      - record: cm:fill_rate:rate5m
+        expr: rate(cm_fills_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # Orders submitted per second over 5 minutes
+      - record: cm:order_rate:rate5m
+        expr: rate(cm_orders_submitted_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # Fill ratio (fills / orders submitted) over 5 minutes
+      - record: cm:fill_ratio:rate5m
+        expr: rate(cm_fills_total[5m]) / rate(cm_orders_submitted_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # Cancel rate per second over 5 minutes
+      - record: cm:cancel_rate:rate5m
+        expr: rate(cm_orders_cancelled_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+  # ─────────────────────────────────────────────
+  # Exchange connectivity aggregations
+  # ─────────────────────────────────────────────
+  - name: cm_exchange_rules
+    interval: 15s
+    rules:
+      # Message throughput per second per exchange
+      - record: cm:message_rate:rate5m
+        expr: rate(cm_exchange_messages_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # Error rate per second per exchange
+      - record: cm:error_rate:rate5m
+        expr: rate(cm_exchange_errors_total[5m])
+        labels:
+          aggregation: "rate5m"
+
+      # WebSocket reconnection rate
+      - record: cm:reconnect_rate:rate1h
+        expr: increase(cm_websocket_reconnects_total[1h])
+        labels:
+          aggregation: "rate1h"
+
+  # ─────────────────────────────────────────────
+  # System resource aggregations
+  # ─────────────────────────────────────────────
+  - name: cm_system_rules
+    interval: 30s
+    rules:
+      # Average CPU utilization over 5 minutes
+      - record: cm:cpu:avg_utilization_5m
+        expr: 1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance)
+        labels:
+          aggregation: "avg_5m"
+
+      # Memory utilization percentage
+      - record: cm:memory:utilization_pct
+        expr: >
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+        labels:
+          aggregation: "current"

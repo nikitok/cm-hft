@@ -1,0 +1,130 @@
+# CM.HFT Prometheus Configuration
+# ==================================
+# High-frequency scraping for trading metrics, standard interval for infra.
+# Retention: 30 days high-resolution data.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: "cm-hft"
+    environment: "production"
+
+# Recording and alerting rule files
+rule_files:
+  - "recording_rules.yml"
+  - "/etc/prometheus/alerts/alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # ─────────────────────────────────────────────
+  # Trading metrics — 5s scrape interval
+  # ─────────────────────────────────────────────
+
+  - job_name: "trading-core"
+    scrape_interval: 5s
+    scrape_timeout: 3s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["trading-core:9090"]
+        labels:
+          service: "trading-core"
+          tier: "critical"
+    # Relabel to attach instance identifier
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  - job_name: "monitoring"
+    scrape_interval: 5s
+    scrape_timeout: 3s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["monitoring:9090"]
+        labels:
+          service: "monitoring"
+          tier: "critical"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # ─────────────────────────────────────────────
+  # Infrastructure metrics — 15s scrape interval
+  # ─────────────────────────────────────────────
+
+  - job_name: "questdb"
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["questdb:9000"]
+        labels:
+          service: "questdb"
+          tier: "infrastructure"
+
+  - job_name: "redis"
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: "redis"
+          tier: "infrastructure"
+    # The redis_exporter container scrapes Redis at redis:6379 and
+    # exposes Prometheus metrics on :9121.
+    params:
+      target: ["redis:6379"]
+
+  - job_name: "node-exporter"
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: "node"
+          tier: "infrastructure"
+
+  # ─────────────────────────────────────────────
+  # Self-monitoring
+  # ─────────────────────────────────────────────
+
+  - job_name: "prometheus"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"
+          tier: "infrastructure"
+
+# Storage configuration
+storage:
+  tsdb:
+    retention.time: 30d
+    retention.size: 50GB
+
+# Remote write configuration — uncomment for long-term storage
+# remote_write:
+#   - url: "https://thanos-receive.example.com/api/v1/receive"
+#     queue_config:
+#       max_samples_per_send: 5000
+#       batch_send_deadline: 5s
+#       min_backoff: 30ms
+#       max_backoff: 5s
+#       capacity: 10000
+#     write_relabel_configs:
+#       # Only forward aggregated metrics to long-term storage
+#       - source_labels: [__name__]
+#         regex: "cm:.*"
+#         action: keep
+#     tls_config:
+#       cert_file: "/etc/prometheus/certs/client.crt"
+#       key_file: "/etc/prometheus/certs/client.key"
+#       ca_file: "/etc/prometheus/certs/ca.crt"
+#
+#   # Alternative: Grafana Mimir / Cortex
+#   # - url: "https://mimir.example.com/api/v1/push"
+#   #   headers:
+#   #     X-Scope-OrgID: "cm-hft"

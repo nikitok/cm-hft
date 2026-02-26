@@ -1,0 +1,98 @@
+# =============================================================================
+# CM.HFT — Development Overrides
+# =============================================================================
+# This file is automatically loaded by `docker compose up` alongside the
+# main docker-compose.yml. It overrides production settings for local dev:
+#   - Exposes additional ports for debugging
+#   - Enables verbose logging
+#   - Reduces resource limits for laptop-friendly operation
+#   - Adds development-only services
+#
+# To run production config only (ignoring overrides):
+#   docker compose -f docker-compose.yml up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Trading Core — Development Overrides
+  # ---------------------------------------------------------------------------
+  trading-core:
+    # Allow restart in dev for faster iteration
+    restart: unless-stopped
+    # Reduced resources for local development
+    cpuset: "0"
+    mem_limit: 1g
+    memswap_limit: 1g
+    # Expose ports for local debugging
+    ports:
+      - "8080:8080"   # Kill switch / health check
+      - "9091:9090"   # Prometheus metrics
+    environment:
+      - RUST_LOG=debug
+      - CM_HFT_ENV=development
+
+  # ---------------------------------------------------------------------------
+  # Monitoring — Development Overrides
+  # ---------------------------------------------------------------------------
+  monitoring:
+    cpus: 0.5
+    mem_limit: 256m
+    ports:
+      - "9092:9090"   # Metrics endpoint
+    environment:
+      - METRICS_SOCKET=/tmp/cm_hft_metrics.sock
+      - LOG_LEVEL=debug
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — Development Overrides
+  # ---------------------------------------------------------------------------
+  prometheus:
+    ports:
+      - "9090:9090"   # Web UI
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+      - "--log.level=debug"
+
+  # ---------------------------------------------------------------------------
+  # Grafana — Development Overrides
+  # ---------------------------------------------------------------------------
+  grafana:
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_LOG_LEVEL=debug
+
+  # ---------------------------------------------------------------------------
+  # Loki — Development Overrides
+  # ---------------------------------------------------------------------------
+  loki:
+    ports:
+      - "3100:3100"   # Loki API
+
+  # ---------------------------------------------------------------------------
+  # QuestDB — Development Overrides
+  # ---------------------------------------------------------------------------
+  questdb:
+    mem_limit: 512m
+    ports:
+      - "9000:9000"   # Web console
+      - "8812:8812"   # PostgreSQL wire protocol
+      - "9009:9009"   # ILP ingestion (line protocol)
+
+  # ---------------------------------------------------------------------------
+  # Redis — Development Overrides
+  # ---------------------------------------------------------------------------
+  redis:
+    ports:
+      - "6379:6379"   # Redis CLI access
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --loglevel verbose

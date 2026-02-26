@@ -1,0 +1,35 @@
+# =============================================================================
+# CM.HFT — Monitoring Service Docker Image (Go)
+# =============================================================================
+# Multi-stage build: compile in golang:1.22-alpine, run from scratch.
+# CGO disabled for a fully static binary — scratch image has zero overhead.
+# Final image is ~10-15MB.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build
+# ---------------------------------------------------------------------------
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+# Copy go.mod/sum first for dependency caching
+COPY infra/monitoring/go.mod infra/monitoring/go.sum ./
+RUN go mod download
+
+# Copy source and build static binary
+COPY infra/monitoring/ .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o monitor ./cmd/monitor
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime
+# ---------------------------------------------------------------------------
+FROM scratch
+
+# Copy the static binary — nothing else needed
+COPY --from=builder /app/monitor /
+
+# 9090: Metrics and health endpoint
+EXPOSE 9090
+
+ENTRYPOINT ["/monitor"]

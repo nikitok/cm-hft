@@ -1,0 +1,43 @@
+# =============================================================================
+# CM.HFT — Trading Core Docker Image (Rust)
+# =============================================================================
+# Multi-stage build: compile in rust:1.77-slim, run in distroless.
+# Distroless chosen for minimal attack surface — no shell, no package manager.
+# Final image is ~20-30MB depending on binary size.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build
+# ---------------------------------------------------------------------------
+FROM rust:1.77-slim AS builder
+
+# Install build dependencies for OpenSSL (required by many Rust HTTP crates)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace manifests first for dependency caching.
+# Docker layer caching means dependencies only rebuild when Cargo.toml/lock change.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Build the trading binary in release mode with optimizations
+RUN cargo build --release --bin cm-trading
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/cc-debian12
+
+# Copy only the compiled binary — no source code in the final image
+COPY --from=builder /app/target/release/cm-trading /
+
+# 8080: Kill switch / health check HTTP endpoint
+# 9090: Prometheus metrics endpoint
+EXPOSE 8080 9090
+
+ENTRYPOINT ["/cm-trading"]
