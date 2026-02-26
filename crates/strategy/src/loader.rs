@@ -61,5 +61,8 @@ pub fn default_registry() -> StrategyRegistry {
     registry.register("simple_mm", |params| {
         Box::new(strategies::MarketMakingStrategy::from_params(params))
     });
+    registry.register("adaptive_mm", |params| {
+        Box::new(strategies::AdaptiveMarketMaker::from_params(params))
+    });
     registry
 }
