@@ -57,5 +57,9 @@ pub fn default_registry() -> StrategyRegistry {
     registry.register("market_making", |params| {
         Box::new(strategies::MarketMakingStrategy::from_params(params))
     });
+    // Alias for convenience / config compatibility
+    registry.register("simple_mm", |params| {
+        Box::new(strategies::MarketMakingStrategy::from_params(params))
+    });
     registry
 }

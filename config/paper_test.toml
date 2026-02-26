@@ -1,0 +1,50 @@
+# CM.HFT Paper Trading Test — Bybit mainnet data, no API keys needed
+#
+# Uses real Bybit market data (public WS) with simulated order execution.
+# Safe to run: no real orders are placed.
+#
+# Usage:
+#   cargo run --release --bin cm-trading -- --config config/paper_test.toml
+
+[binance]
+testnet = true
+ws_url = "wss://testnet.binance.vision/ws"
+rest_url = "https://testnet.binance.vision"
+timeout_ms = 5000
+
+[bybit]
+testnet = false
+ws_url = "wss://stream.bybit.com/v5/public/linear"
+rest_url = "https://api.bybit.com"
+timeout_ms = 5000
+
+[market_data]
+symbols = ["BTCUSDT"]
+depth_levels = 20
+
+[market_data.reconnect]
+initial_backoff_ms = 1000
+max_backoff_ms = 30000
+max_retries = 0
+
+[risk]
+max_position_size = 0.1
+max_order_size = 0.01
+max_orders_per_second = 10
+daily_loss_limit_usd = 500.0
+fat_finger_bps = 100
+
+[recorder]
+questdb_ilp_addr = "localhost:9009"
+batch_size = 1000
+flush_interval_ms = 1000
+
+[trading]
+mode = "paper"
+strategy = "simple_mm"
+
+[paper]
+latency_ms = 1
+maker_fee = -0.0001
+taker_fee = 0.0004
+max_fill_fraction = 1.0

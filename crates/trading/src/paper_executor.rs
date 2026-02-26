@@ -171,18 +171,31 @@ impl ExchangeGateway for PaperExecutor {
 
         let exchange_id = self.next_exchange_id();
 
+        let crosses = match order.side {
+            Side::Buy => {
+                let ask = self.best_ask.lock().clone();
+                ask.map_or(false, |(ask_price, _)| order.price >= ask_price)
+            }
+            Side::Sell => {
+                let bid = self.best_bid.lock().clone();
+                bid.map_or(false, |(bid_price, _)| order.price <= bid_price)
+            }
+        };
+
         let immediate_fill = match order.order_type {
             OrderType::Market => true,
-            OrderType::Limit | OrderType::PostOnly => match order.side {
-                Side::Buy => {
-                    let ask = self.best_ask.lock().clone();
-                    ask.map_or(false, |(ask_price, _)| order.price >= ask_price)
+            OrderType::Limit => crosses,
+            OrderType::PostOnly => {
+                if crosses {
+                    // PostOnly orders that would cross are rejected, not filled
+                    return Err(anyhow::anyhow!(
+                        "PostOnly order would cross the book (price={}, side={:?})",
+                        order.price,
+                        order.side
+                    ));
                 }
-                Side::Sell => {
-                    let bid = self.best_bid.lock().clone();
-                    bid.map_or(false, |(bid_price, _)| order.price <= bid_price)
-                }
-            },
+                false
+            }
         };
 
         if immediate_fill {

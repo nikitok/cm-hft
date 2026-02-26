@@ -58,6 +58,16 @@ impl OrderBook {
         }
     }
 
+    /// The exchange this book belongs to.
+    pub fn exchange(&self) -> Exchange {
+        self.exchange
+    }
+
+    /// The symbol this book represents.
+    pub fn symbol(&self) -> &Symbol {
+        &self.symbol
+    }
+
     /// Returns `true` if the book has received an initial snapshot.
     pub fn is_initialized(&self) -> bool {
         self.initialized

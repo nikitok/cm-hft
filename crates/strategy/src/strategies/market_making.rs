@@ -119,15 +119,12 @@ impl Strategy for MarketMakingStrategy {
             ctx.cancel_order(id);
         }
 
-        // Determine the exchange and symbol from the book's best bid/ask
-        let (exchange, symbol) = match (book.best_bid(), book.best_ask()) {
-            (Some(_), Some(_)) => {
-                // We use Binance/BTCUSDT as defaults since OrderBook doesn't expose
-                // exchange/symbol directly. In production the engine would pass these.
-                (Exchange::Binance, Symbol::new("BTCUSDT"))
-            }
-            _ => return,
-        };
+        // Determine the exchange and symbol from the order book
+        if book.best_bid().is_none() || book.best_ask().is_none() {
+            return;
+        }
+        let exchange = book.exchange();
+        let symbol = book.symbol().clone();
 
         let net_pos = ctx.net_position(&exchange, &symbol);
 
