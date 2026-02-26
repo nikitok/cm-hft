@@ -49,6 +49,41 @@ pub struct ReplayResult {
     pub fee_total: f64,
 }
 
+/// Load events from multiple gzipped JSONL files, merged and sorted by timestamp.
+pub fn load_events_multi(paths: &[String]) -> Result<Vec<(u64, ReplayEvent)>> {
+    let mut all_events = Vec::new();
+    for path in paths {
+        let mut events = load_events(path)?;
+        all_events.append(&mut events);
+    }
+    all_events.sort_by_key(|(ts, _)| *ts);
+    Ok(all_events)
+}
+
+/// Find all timestamped data files for a symbol in the given directory.
+/// Matches pattern: bybit_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz
+pub fn find_series_files(dir: &str, symbol: &str) -> Vec<String> {
+    let prefix = format!("bybit_{}_", symbol.to_lowercase());
+    let suffix = ".jsonl.gz";
+
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&prefix) && name.ends_with(suffix) {
+                // Check it's a timestamped file (YYYY-MM-DD_HH:MM pattern after prefix)
+                let middle = &name[prefix.len()..name.len() - suffix.len()];
+                // Timestamped files have format: 2026-02-26_22:00 (16 chars)
+                if middle.len() == 16 && middle.chars().nth(4) == Some('-') && middle.chars().nth(10) == Some('_') {
+                    files.push(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 /// Load events from a gzipped JSONL file, sorted by timestamp.
 pub fn load_events(path: &str) -> Result<Vec<(u64, ReplayEvent)>> {
     let file = std::fs::File::open(path)

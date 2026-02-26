@@ -6,7 +6,7 @@ use std::path::Path;
 
 use cm_core::types::Exchange;
 use cm_strategy::traits::StrategyParams;
-use replay_harness::{load_events, ReplayTestHarness, SimConfig};
+use replay_harness::{find_series_files, load_events, load_events_multi, ReplayTestHarness, SimConfig};
 
 fn data_path(symbol: &str) -> Option<String> {
     let durations = ["30m", "5m", "3m", "1h"];
@@ -305,6 +305,90 @@ fn bench_improvement_stages() {
 }
 
 #[test]
+fn bench_diagnostic() {
+    let path = match data_path("btcusdt") {
+        Some(p) => p,
+        None => {
+            println!("SKIP: no BTCUSDT data");
+            return;
+        }
+    };
+
+    let events = load_events(&path).expect("failed to load");
+
+    // Check price trend in the data
+    let mut first_mid: Option<f64> = None;
+    let mut last_mid: Option<f64> = None;
+    let mut high = f64::NEG_INFINITY;
+    let mut low = f64::INFINITY;
+    for (_, event) in &events {
+        if let replay_harness::ReplayEvent::Book(update) = event {
+            if let (Some(&(bid_p, _)), Some(&(ask_p, _))) = (update.bids.first(), update.asks.first()) {
+                let mid = (bid_p.to_f64() + ask_p.to_f64()) / 2.0;
+                if first_mid.is_none() {
+                    first_mid = Some(mid);
+                }
+                last_mid = Some(mid);
+                if mid > high { high = mid; }
+                if mid < low { low = mid; }
+            }
+        }
+    }
+
+    let first = first_mid.unwrap_or(0.0);
+    let last = last_mid.unwrap_or(0.0);
+    let range_bps = (high - low) / first * 10_000.0;
+    let drift_bps = (last - first) / first * 10_000.0;
+
+    println!();
+    println!("═══════════════════════════════════════════════════════════");
+    println!("  DATA DIAGNOSTIC — BTCUSDT");
+    println!("═══════════════════════════════════════════════════════════");
+    println!("  First mid:  ${:.2}", first);
+    println!("  Last mid:   ${:.2}", last);
+    println!("  High:       ${:.2}", high);
+    println!("  Low:        ${:.2}", low);
+    println!("  Range:      {:.1} bps ({:.2}%)", range_bps, range_bps / 100.0);
+    println!("  Net drift:  {:.1} bps ({:.2}%)", drift_bps, drift_bps / 100.0);
+    println!();
+
+    // Run with Full Stack params and track per-fill stats
+    let params = StrategyParams {
+        params: serde_json::json!({
+            "risk_aversion": 0.3,
+            "fill_intensity": 1.5,
+            "time_horizon": 100.0,
+            "vpin_factor": 2.0,
+            "size_decay_power": 2.0,
+            "reduce_boost": 0.5
+        }),
+    };
+
+    let mut harness = ReplayTestHarness::with_config(
+        "adaptive_mm", params, Exchange::Bybit, "BTCUSDT", SimConfig::default(),
+    );
+    let result = harness.run(&events);
+
+    let pnl_final = result.pnl_series.last().copied().unwrap_or(0.0);
+    let unrealized = pnl_final - result.total_pnl;
+    let pnl_per_fill = if result.fill_count > 0 {
+        result.total_pnl / result.fill_count as f64
+    } else {
+        0.0
+    };
+
+    println!("  FULL STACK RESULTS:");
+    println!("  Fills:         {}", result.fill_count);
+    println!("  Realized PnL:  ${:.4}", result.total_pnl);
+    println!("  Unrealized:    ${:.4}", unrealized);
+    println!("  Final M2M:     ${:.4}", pnl_final);
+    println!("  PnL per fill:  ${:.6}", pnl_per_fill);
+    println!("  Fee total:     ${:.4} (rebate)", result.fee_total);
+    println!("  PnL ex-fees:   ${:.4}", result.total_pnl - result.fee_total);
+    println!();
+}
+
+#[test]
 fn bench_param_sweep() {
     let path = match data_path("btcusdt") {
         Some(p) => p,
@@ -428,4 +512,93 @@ fn bench_param_sweep() {
     println!("  {:-<105}", "");
     println!("  Total configs: {}", results.len());
     println!();
+}
+
+/// Run the full-stack adaptive_mm on multi-hour series data.
+/// Requires timestamped files from `scripts/record-series.sh`.
+#[test]
+fn bench_series() {
+    let data_dirs = ["testdata", "../../testdata"];
+
+    for sym in &["btcusdt", "ethusdt"] {
+        let mut series_files = Vec::new();
+        for dir in &data_dirs {
+            let files = find_series_files(dir, sym);
+            if !files.is_empty() {
+                series_files = files;
+                break;
+            }
+        }
+
+        if series_files.is_empty() {
+            println!("SKIP: no series data for {}", sym.to_uppercase());
+            continue;
+        }
+
+        println!();
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  SERIES BENCH — {} ({} files)", sym.to_uppercase(), series_files.len());
+        println!("═══════════════════════════════════════════════════════════");
+        for f in &series_files {
+            println!("  {}", f);
+        }
+
+        let events = load_events_multi(&series_files).expect("failed to load series");
+        let book_count = events.iter().filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_))).count();
+        let trade_count = events.iter().filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Trade(_))).count();
+
+        println!("  Events: {} book + {} trade = {} total", book_count, trade_count, events.len());
+        println!();
+
+        // Full Stack config
+        let params = StrategyParams {
+            params: serde_json::json!({
+                "risk_aversion": 0.3,
+                "fill_intensity": 1.5,
+                "time_horizon": 100.0,
+                "vpin_factor": 2.0,
+                "vpin_bucket_size": 50000.0,
+                "vpin_n_buckets": 20,
+                "size_decay_power": 2.0,
+                "reduce_boost": 0.5
+            }),
+        };
+
+        let start = std::time::Instant::now();
+        let mut harness = ReplayTestHarness::with_config(
+            "adaptive_mm", params, Exchange::Bybit, &sym.to_uppercase(), SimConfig::default(),
+        );
+        let result = harness.run(&events);
+        let elapsed = start.elapsed();
+
+        let pnl_final = result.pnl_series.last().copied().unwrap_or(0.0);
+        let unrealized = pnl_final - result.total_pnl;
+
+        let mut peak = f64::NEG_INFINITY;
+        let mut max_dd = 0.0_f64;
+        for &pnl in &result.pnl_series {
+            if pnl > peak { peak = pnl; }
+            let dd = peak - pnl;
+            if dd > max_dd { max_dd = dd; }
+        }
+
+        println!("  Replay time:    {:?}", elapsed);
+        println!("  Fills:          {}", result.fill_count);
+        println!("  Orders placed:  {}", result.order_count);
+        println!("  Max position:   {:.6}", result.max_position);
+        println!("  Peak notional:  ${:.2}", result.peak_notional);
+        println!("  ──────────────────────────────────");
+        println!("  Realized PnL:   ${:.4}", result.total_pnl);
+        println!("  Unrealized:     ${:.4}", unrealized);
+        println!("  Final M2M PnL:  ${:.4}", pnl_final);
+        println!("  Max drawdown:   ${:.4}", max_dd);
+        println!("  Fee total:      ${:.4} (rebate)", result.fee_total);
+        if result.fill_count > 0 {
+            println!("  PnL per fill:   ${:.6}", result.total_pnl / result.fill_count as f64);
+        }
+        if result.peak_notional > 0.0 {
+            println!("  ROC (1x):       {:.4}%", result.total_pnl / result.peak_notional * 100.0);
+        }
+        println!();
+    }
 }
