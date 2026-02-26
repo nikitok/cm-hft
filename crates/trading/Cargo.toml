@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "cm-trading"
 path = "src/main.rs"
 
+[[bin]]
+name = "cm-record"
+path = "src/bin/record.rs"
+
 [dependencies]
 cm-core = { workspace = true }
 cm-market-data = { path = "../market-data" }
@@ -31,8 +35,14 @@ axum = "0.8"
 parking_lot = "0.12"
 async-trait = "0.1"
 dashmap = "6"
+flate2 = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 crossbeam = { workspace = true }
 dashmap = "6"
+flate2 = "1"
+cm-strategy = { path = "../strategy" }
+cm-market-data = { path = "../market-data" }
+cm-oms = { path = "../oms" }
+cm-core = { workspace = true }
