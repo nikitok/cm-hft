@@ -238,7 +238,7 @@ async fn main() -> Result<()> {
                         c.fetch_add(1, Ordering::Relaxed);
                     }
                     flush_counter += 1;
-                    if flush_counter % flush_interval == 0 {
+                    if flush_counter.is_multiple_of(flush_interval) {
                         sw.writer.flush()?;
                     }
                 }
@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
                         c.fetch_add(1, Ordering::Relaxed);
                     }
                     flush_counter += 1;
-                    if flush_counter % flush_interval == 0 {
+                    if flush_counter.is_multiple_of(flush_interval) {
                         sw.writer.flush()?;
                     }
                 }
