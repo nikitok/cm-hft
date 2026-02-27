@@ -49,14 +49,21 @@ pub struct ReplayResult {
     pub fee_total: f64,
 }
 
-/// Load events from multiple gzipped JSONL files, merged and sorted by timestamp.
+/// Load events from multiple gzipped JSONL files, concatenated in file order.
+///
+/// Files should be passed in chronological order (sorted by name).
+/// Events within each file are in receive order. Across files, we assign
+/// a globally monotonic sequence number.
 pub fn load_events_multi(paths: &[String]) -> Result<Vec<(u64, ReplayEvent)>> {
     let mut all_events = Vec::new();
+    let mut global_seq: u64 = 0;
     for path in paths {
-        let mut events = load_events(path)?;
-        all_events.append(&mut events);
+        let events = load_events(path)?;
+        for (_, event) in events {
+            all_events.push((global_seq, event));
+            global_seq += 1;
+        }
     }
-    all_events.sort_by_key(|(ts, _)| *ts);
     Ok(all_events)
 }
 
@@ -84,7 +91,11 @@ pub fn find_series_files(dir: &str, symbol: &str) -> Vec<String> {
     files
 }
 
-/// Load events from a gzipped JSONL file, sorted by timestamp.
+/// Load events from a gzipped JSONL file, preserving file order.
+///
+/// Events are NOT sorted by `ts_ns` because book and trade timestamps may
+/// use different clock bases (exchange-relative vs UNIX epoch). File order
+/// corresponds to receive order, which naturally interleaves both streams.
 pub fn load_events(path: &str) -> Result<Vec<(u64, ReplayEvent)>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("failed to open {}", path))?;
@@ -92,6 +103,7 @@ pub fn load_events(path: &str) -> Result<Vec<(u64, ReplayEvent)>> {
     let reader = BufReader::new(decoder);
 
     let mut events = Vec::new();
+    let mut seq: u64 = 0;
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -114,10 +126,12 @@ pub fn load_events(path: &str) -> Result<Vec<(u64, ReplayEvent)>> {
             }
         };
 
-        events.push((recorded.ts_ns, event));
+        // Use monotonic sequence number as the event timestamp.
+        // The original ts_ns has inconsistent clock bases across event types.
+        events.push((seq, event));
+        seq += 1;
     }
 
-    events.sort_by_key(|(ts, _)| *ts);
     Ok(events)
 }
 

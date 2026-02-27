@@ -44,15 +44,13 @@ pub struct AdaptiveMarketMaker {
     // ── Quoting state ──
     last_quoted_mid: Option<f64>,
     needs_requote: bool,
-    active_bids: Vec<OrderId>,
-    active_asks: Vec<OrderId>,
 }
 
 impl AdaptiveMarketMaker {
     const DEFAULT_BASE_SPREAD_BPS: f64 = 8.0;
     const DEFAULT_ORDER_SIZE: f64 = 0.001;
     const DEFAULT_NUM_LEVELS: usize = 1;
-    const DEFAULT_MAX_POSITION: f64 = 0.01;
+    const DEFAULT_MAX_POSITION: f64 = 0.1;
     const DEFAULT_MIN_SPREAD_BPS: f64 = 2.0;
     const DEFAULT_TRADE_FLOW_FACTOR: f64 = 0.3;
     const DEFAULT_BOOK_IMBALANCE_FACTOR: f64 = 0.2;
@@ -65,7 +63,7 @@ impl AdaptiveMarketMaker {
     // A-S defaults
     const DEFAULT_RISK_AVERSION: f64 = 0.3;
     const DEFAULT_FILL_INTENSITY: f64 = 1.5;
-    const DEFAULT_TIME_HORIZON: f64 = 100.0;
+    const DEFAULT_TIME_HORIZON: f64 = 1.0;
 
     // VPIN defaults
     const DEFAULT_VPIN_FACTOR: f64 = 2.0;
@@ -150,8 +148,6 @@ impl AdaptiveMarketMaker {
             vpin_tracker: VpinTracker::new(vpin_bucket_size, vpin_n_buckets),
             last_quoted_mid: None,
             needs_requote: false,
-            active_bids: Vec::new(),
-            active_asks: Vec::new(),
         }
     }
 
@@ -197,19 +193,17 @@ impl Strategy for AdaptiveMarketMaker {
         }
         self.needs_requote = false;
 
+        let exchange = book.exchange();
+        let symbol = book.symbol().clone();
+
         // 3. Cancel all existing orders.
-        for id in self.active_bids.drain(..) {
-            ctx.cancel_order(id);
-        }
-        for id in self.active_asks.drain(..) {
-            ctx.cancel_order(id);
-        }
+        // Note: we use cancel_all because submit_order() doesn't return OrderIds,
+        // so we can't track individual orders for targeted cancellation.
+        ctx.cancel_all(Some(exchange), Some(symbol.clone()));
 
         if book.best_bid().is_none() || book.best_ask().is_none() {
             return;
         }
-        let exchange = book.exchange();
-        let symbol = book.symbol().clone();
         let net_pos = ctx.net_position(&exchange, &symbol);
 
         // 4. Fair value adjustments (trade flow + book imbalance).
@@ -237,27 +231,45 @@ impl Strategy for AdaptiveMarketMaker {
             let kappa = self.fill_intensity;
             let tau = self.time_horizon;
 
-            let sigma = vol_bps / 10_000.0;
-            let sigma_price = sigma * mid;
-            let sigma_price_sq = sigma_price * sigma_price;
+            // Work in bps domain — makes γ and τ price-level independent.
+            // σ_bps is tick-to-tick volatility in bps; squaring stays in bps².
+            let sigma_bps = vol_bps;
+            let sigma_bps_sq = sigma_bps * sigma_bps;
 
-            // A-S reservation price: naturally handles inventory skew.
-            // q > 0 (long) → reservation_price < adjusted_mid → encourages selling.
-            let q = net_pos;
-            reservation_price = adjusted_mid - q * gamma * sigma_price_sq * tau;
-
-            // A-S optimal spread.
-            let as_spread = gamma * sigma_price_sq * tau
+            // A-S optimal spread in bps:
+            //   spread_bps = γ·σ²·τ + (2/γ)·ln(1 + γ/κ)
+            // With σ_bps=2, γ=0.3, τ=1: spread = 0.3*4*1 + 6.67*0.18 ≈ 2.4 bps
+            let spread_bps = gamma * sigma_bps_sq * tau
                 + (2.0 / gamma) * (1.0 + gamma / kappa).ln();
+
+            // Convert bps → dollars.
+            let as_spread = mid * spread_bps / 10_000.0;
 
             // VPIN multiplier: widen spread during toxic flow.
             let vpin_multiplier = 1.0 + self.vpin_factor * self.vpin_tracker.vpin();
 
             // Floor at min_spread, then apply VPIN multiplier.
             half_spread = (as_spread / 2.0).max(min_spread_floor) * vpin_multiplier;
+
+            // A-S reservation price with NORMALIZED inventory.
+            // q_norm ∈ [-1, 1]: position as fraction of max_position.
+            let q_norm = if self.max_position > 1e-12 {
+                (net_pos / self.max_position).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            // Shift also computed in bps domain, then converted to dollars.
+            let shift_bps = q_norm * gamma * sigma_bps_sq * tau;
+            let raw_shift = mid * shift_bps / 10_000.0;
+
+            // Clamp shift so the reducing-side quote never crosses mid.
+            // At maximum shift, reducing-side sits at mid + 5% of half_spread.
+            let max_shift = half_spread * 0.95;
+            let shift = raw_shift.clamp(-max_shift, max_shift);
+            reservation_price = adjusted_mid - shift;
         }
 
-        // 6. Asymmetric sizing.
+        // 6. Asymmetric sizing + hard position cap.
         let r = if self.max_position > 1e-12 {
             (net_pos.abs() / self.max_position).clamp(0.0, 1.0)
         } else {
@@ -266,7 +278,7 @@ impl Strategy for AdaptiveMarketMaker {
         let accum_size = self.order_size * (1.0 - r).powf(self.size_decay_power);
         let reduce_size = self.order_size * (1.0 + r * self.reduce_boost);
 
-        let (bid_size, ask_size) = if net_pos > 1e-12 {
+        let (mut bid_size, mut ask_size) = if net_pos > 1e-12 {
             // Long: buying accumulates, selling reduces
             (accum_size, reduce_size)
         } else if net_pos < -1e-12 {
@@ -275,6 +287,15 @@ impl Strategy for AdaptiveMarketMaker {
         } else {
             (self.order_size, self.order_size)
         };
+
+        // Hard position limit: never quote accumulating side beyond max_position.
+        // This is unconditional — works even when size_decay_power=0.
+        if net_pos >= self.max_position {
+            bid_size = 0.0; // at/beyond max long, don't buy more
+        }
+        if net_pos <= -self.max_position {
+            ask_size = 0.0; // at/beyond max short, don't sell more
+        }
 
         // 7. Submit quotes around reservation_price.
         for level in 0..self.num_levels {
@@ -318,8 +339,6 @@ impl Strategy for AdaptiveMarketMaker {
     }
 
     fn on_fill(&mut self, _ctx: &mut TradingContext, fill: &Fill) {
-        self.active_bids.retain(|id| *id != fill.order_id);
-        self.active_asks.retain(|id| *id != fill.order_id);
         // Trigger immediate requote on next book update.
         self.needs_requote = true;
 
@@ -453,11 +472,11 @@ mod tests {
         assert!((strat.base_spread_bps - 8.0).abs() < 1e-10);
         assert!((strat.order_size - 0.001).abs() < 1e-10);
         assert_eq!(strat.num_levels, 1);
-        assert!((strat.max_position - 0.01).abs() < 1e-10);
+        assert!((strat.max_position - 0.1).abs() < 1e-10);
         assert!((strat.min_spread_bps - 2.0).abs() < 1e-10);
         assert!((strat.risk_aversion - 0.3).abs() < 1e-10);
         assert!((strat.fill_intensity - 1.5).abs() < 1e-10);
-        assert!((strat.time_horizon - 100.0).abs() < 1e-10);
+        assert!((strat.time_horizon - 1.0).abs() < 1e-10);
         assert!((strat.vpin_factor - 2.0).abs() < 1e-10);
         assert!((strat.size_decay_power - 2.0).abs() < 1e-10);
         assert!((strat.reduce_boost - 0.5).abs() < 1e-10);
@@ -469,8 +488,8 @@ mod tests {
         let book = make_book(50000.0, 50001.0);
         let mut ctx = make_context();
         strat.on_book_update(&mut ctx, &book);
-        // 1 level: 1 bid + 1 ask = 2
-        assert_eq!(ctx.action_count(), 2);
+        // 1 cancel_all + 1 bid + 1 ask = 3
+        assert_eq!(ctx.action_count(), 3);
     }
 
     #[test]
@@ -489,12 +508,12 @@ mod tests {
         let mut ctx = make_context_with_position(0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
+        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
 
-        // With r=1.0: accum_size = 0.001 * (1-1)^2 = 0 → bid skipped
+        // With r=1.0: accum_size = 0.001 * (1-1)^2 = 0 → bid skipped (hard cap also blocks)
         // reduce_size = 0.001 * (1 + 1*0.5) = 0.0015 → ask submitted
-        // So we should get only 1 action (ask side)
-        assert_eq!(actions.len(), 1, "at max long, only ask should be quoted");
-        if let crate::context::OrderAction::Submit { side, quantity, .. } = &actions[0] {
+        assert_eq!(submits.len(), 1, "at max long, only ask should be quoted");
+        if let crate::context::OrderAction::Submit { side, quantity, .. } = submits[0] {
             assert_eq!(*side, Side::Sell);
             assert!(quantity.to_f64() > 0.001, "reducing side should be boosted");
         } else {
@@ -518,10 +537,11 @@ mod tests {
         let mut ctx = make_context_with_position(-0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
+        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
 
-        // With r=1.0: accum_size = 0 → ask skipped, reduce_size = 0.0015 → bid submitted
-        assert_eq!(actions.len(), 1, "at max short, only bid should be quoted");
-        if let crate::context::OrderAction::Submit { side, quantity, .. } = &actions[0] {
+        // With r=1.0: accum_size = 0 → ask skipped (hard cap also blocks), reduce_size = 0.0015 → bid submitted
+        assert_eq!(submits.len(), 1, "at max short, only bid should be quoted");
+        if let crate::context::OrderAction::Submit { side, quantity, .. } = submits[0] {
             assert_eq!(*side, Side::Buy);
             assert!(quantity.to_f64() > 0.001, "reducing side should be boosted");
         } else {
@@ -545,15 +565,16 @@ mod tests {
         let mut ctx = make_context_with_position(0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
+        let submits: Vec<_> = actions.into_iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
 
         // Both sides should be quoted (accum_size > 1e-8)
-        assert_eq!(actions.len(), 2, "partial inventory should quote both sides");
+        assert_eq!(submits.len(), 2, "partial inventory should quote both sides");
 
-        let bid_qty = match &actions[0] {
+        let bid_qty = match &submits[0] {
             crate::context::OrderAction::Submit { quantity, .. } => quantity.to_f64(),
             _ => panic!("expected Submit"),
         };
-        let ask_qty = match &actions[1] {
+        let ask_qty = match &submits[1] {
             crate::context::OrderAction::Submit { quantity, .. } => quantity.to_f64(),
             _ => panic!("expected Submit"),
         };
@@ -596,11 +617,12 @@ mod tests {
         strat.on_book_update(&mut ctx_long, &book);
         let long_actions = ctx_long.drain_actions();
 
-        let flat_ask = match &flat_actions[1] {
+        // Index 0 = CancelAll, 1 = bid, 2 = ask
+        let flat_ask = match &flat_actions[2] {
             crate::context::OrderAction::Submit { price, .. } => price.to_f64(),
             _ => panic!("expected Submit"),
         };
-        let long_ask = match &long_actions[1] {
+        let long_ask = match &long_actions[2] {
             crate::context::OrderAction::Submit { price, .. } => price.to_f64(),
             _ => panic!("expected Submit"),
         };
@@ -613,10 +635,10 @@ mod tests {
         let mut strat = AdaptiveMarketMaker::from_params(&default_params());
         let book = make_book(50000.0, 50001.0);
 
-        // First update
+        // First update: cancel_all + bid + ask = 3
         let mut ctx1 = make_context();
         strat.on_book_update(&mut ctx1, &book);
-        assert_eq!(ctx1.action_count(), 2);
+        assert_eq!(ctx1.action_count(), 3);
 
         // Tiny move — normally would NOT requote
         let book2 = make_book(50000.01, 50001.01);
@@ -690,5 +712,87 @@ mod tests {
         assert!((strat.base_spread_bps - 15.0).abs() < 1e-10);
         assert!((strat.max_position - 0.05).abs() < 1e-10);
         assert!(strat.last_quoted_mid.is_none());
+    }
+
+    #[test]
+    fn test_vpin_widens_spread() {
+        // Create two strategies: one with VPIN=0, one with VPIN=100
+        let params_no_vpin = StrategyParams {
+            params: serde_json::json!({
+                "vpin_factor": 0.0,
+                "vpin_bucket_size": 100.0,
+                "vpin_n_buckets": 2,
+            }),
+        };
+        let params_with_vpin = StrategyParams {
+            params: serde_json::json!({
+                "vpin_factor": 100.0,
+                "vpin_bucket_size": 100.0,
+                "vpin_n_buckets": 2,
+            }),
+        };
+
+        let mut strat_no = AdaptiveMarketMaker::from_params(&params_no_vpin);
+        let mut strat_vp = AdaptiveMarketMaker::from_params(&params_with_vpin);
+
+        // Warm up vol tracker
+        for price in [50000.0, 50000.5, 50001.0, 50000.3, 50000.8] {
+            let b = make_book(price, price + 1.0);
+            let mut c = make_context();
+            strat_no.on_book_update(&mut c, &b);
+            strat_no.last_quoted_mid = None;
+            let mut c2 = make_context();
+            strat_vp.on_book_update(&mut c2, &b);
+            strat_vp.last_quoted_mid = None;
+        }
+
+        // Feed trades to build VPIN (all buys = toxic)
+        for _ in 0..30 {
+            let trade = Trade {
+                exchange: Exchange::Binance,
+                symbol: Symbol::new("BTCUSDT"),
+                timestamp: Timestamp::from_millis(1000),
+                price: Price::from(50000.0),
+                quantity: Quantity::from(0.01),
+                side: Side::Buy,
+                trade_id: "1".to_string(),
+            };
+            let mut c = make_context();
+            strat_no.on_trade(&mut c, &trade);
+            let mut c2 = make_context();
+            strat_vp.on_trade(&mut c2, &trade);
+        }
+
+        // Check VPIN state
+        let vpin_no = strat_no.vpin_tracker.vpin();
+        let vpin_vp = strat_vp.vpin_tracker.vpin();
+        eprintln!("VPIN no_vpin strat: {}", vpin_no);
+        eprintln!("VPIN with_vpin strat: {}", vpin_vp);
+
+        // Now get quotes from both
+        let book = make_book(50000.0, 50001.0);
+        strat_no.last_quoted_mid = None;
+        strat_vp.last_quoted_mid = None;
+        let mut ctx_no = make_context();
+        strat_no.on_book_update(&mut ctx_no, &book);
+        let mut ctx_vp = make_context();
+        strat_vp.on_book_update(&mut ctx_vp, &book);
+
+        let actions_no = ctx_no.drain_actions();
+        let actions_vp = ctx_vp.drain_actions();
+
+        // Extract ask prices
+        let ask_no = actions_no.iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => Some(price.to_f64()),
+            _ => None,
+        }).expect("no ask from no-vpin strat");
+
+        let ask_vp = actions_vp.iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => Some(price.to_f64()),
+            _ => None,
+        }).expect("no ask from with-vpin strat");
+
+        eprintln!("Ask no_vpin: {:.4}, ask with_vpin: {:.4}", ask_no, ask_vp);
+        assert!(ask_vp > ask_no, "VPIN should widen spread: vpin ask {} should be > no-vpin ask {}", ask_vp, ask_no);
     }
 }

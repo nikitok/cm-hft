@@ -26,10 +26,6 @@ pub struct MarketMakingStrategy {
     skew_factor: f64,
     /// Last quoted mid price.
     last_mid: Option<f64>,
-    /// Current active bid order IDs (to cancel before requoting).
-    active_bids: Vec<OrderId>,
-    /// Current active ask order IDs (to cancel before requoting).
-    active_asks: Vec<OrderId>,
 }
 
 impl MarketMakingStrategy {
@@ -65,8 +61,6 @@ impl MarketMakingStrategy {
                 .get_f64("skew_factor")
                 .unwrap_or(Self::DEFAULT_SKEW_FACTOR),
             last_mid: None,
-            active_bids: Vec::new(),
-            active_asks: Vec::new(),
         }
     }
 
@@ -111,20 +105,15 @@ impl Strategy for MarketMakingStrategy {
             }
         }
 
-        // Cancel existing quotes
-        for id in self.active_bids.drain(..) {
-            ctx.cancel_order(id);
-        }
-        for id in self.active_asks.drain(..) {
-            ctx.cancel_order(id);
-        }
-
         // Determine the exchange and symbol from the order book
         if book.best_bid().is_none() || book.best_ask().is_none() {
             return;
         }
         let exchange = book.exchange();
         let symbol = book.symbol().clone();
+
+        // Cancel all existing quotes before requoting.
+        ctx.cancel_all(Some(exchange), Some(symbol.clone()));
 
         let net_pos = ctx.net_position(&exchange, &symbol);
 
@@ -159,10 +148,6 @@ impl Strategy for MarketMakingStrategy {
     }
 
     fn on_fill(&mut self, _ctx: &mut TradingContext, fill: &Fill) {
-        // Remove filled order from our active tracking
-        self.active_bids.retain(|id| *id != fill.order_id);
-        self.active_asks.retain(|id| *id != fill.order_id);
-
         tracing::debug!(
             order_id = %fill.order_id,
             side = ?fill.side,
@@ -287,8 +272,8 @@ mod tests {
 
         strat.on_book_update(&mut ctx, &book);
 
-        // With 1 level: should produce 1 bid + 1 ask = 2 actions
-        assert_eq!(ctx.action_count(), 2);
+        // cancel_all + 1 bid + 1 ask = 3 actions
+        assert_eq!(ctx.action_count(), 3);
     }
 
     #[test]
@@ -302,8 +287,8 @@ mod tests {
 
         strat.on_book_update(&mut ctx, &book);
 
-        // 3 levels * 2 sides = 6 actions
-        assert_eq!(ctx.action_count(), 6);
+        // cancel_all + 3 levels * 2 sides = 7 actions
+        assert_eq!(ctx.action_count(), 7);
     }
 
     #[test]
@@ -321,14 +306,15 @@ mod tests {
         strat.on_book_update(&mut ctx, &book);
 
         let actions = ctx.drain_actions();
-        assert_eq!(actions.len(), 2);
+        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        assert_eq!(submits.len(), 2);
 
         // Mid is ~50000.5
         let mid = 50000.5;
         let half_spread = mid * 10.0 / 10_000.0 / 2.0; // ~25.00025
 
-        // First action should be a Buy (bid)
-        if let crate::context::OrderAction::Submit { price, side, .. } = &actions[0] {
+        // First submit should be a Buy (bid)
+        if let crate::context::OrderAction::Submit { price, side, .. } = submits[0] {
             assert_eq!(*side, Side::Buy);
             let expected_bid = mid - half_spread;
             let actual = price.to_f64();
@@ -340,8 +326,8 @@ mod tests {
             panic!("expected Submit action");
         }
 
-        // Second action should be a Sell (ask)
-        if let crate::context::OrderAction::Submit { price, side, .. } = &actions[1] {
+        // Second submit should be a Sell (ask)
+        if let crate::context::OrderAction::Submit { price, side, .. } = submits[1] {
             assert_eq!(*side, Side::Sell);
             let expected_ask = mid + half_spread;
             let actual = price.to_f64();
@@ -378,14 +364,18 @@ mod tests {
         strat.on_book_update(&mut ctx_long, &book);
         let long_actions = ctx_long.drain_actions();
 
+        // Filter to Submit actions only (skip CancelAll)
+        let flat_submits: Vec<_> = flat_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let long_submits: Vec<_> = long_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+
         // Extract bid prices
-        let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = &flat_actions[0] {
+        let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = flat_submits[0] {
             price.to_f64()
         } else {
             panic!("expected Submit");
         };
 
-        let long_bid = if let crate::context::OrderAction::Submit { price, .. } = &long_actions[0] {
+        let long_bid = if let crate::context::OrderAction::Submit { price, .. } = long_submits[0] {
             price.to_f64()
         } else {
             panic!("expected Submit");
@@ -398,13 +388,13 @@ mod tests {
         );
 
         // Extract ask prices
-        let flat_ask = if let crate::context::OrderAction::Submit { price, .. } = &flat_actions[1] {
+        let flat_ask = if let crate::context::OrderAction::Submit { price, .. } = flat_submits[1] {
             price.to_f64()
         } else {
             panic!("expected Submit");
         };
 
-        let long_ask = if let crate::context::OrderAction::Submit { price, .. } = &long_actions[1] {
+        let long_ask = if let crate::context::OrderAction::Submit { price, .. } = long_submits[1] {
             price.to_f64()
         } else {
             panic!("expected Submit");
@@ -426,11 +416,11 @@ mod tests {
         };
         let mut strat = MarketMakingStrategy::from_params(&params);
 
-        // First update -- always quotes
+        // First update -- always quotes (cancel_all + bid + ask)
         let book1 = make_book(50000.0, 50001.0);
         let mut ctx1 = make_context();
         strat.on_book_update(&mut ctx1, &book1);
-        assert_eq!(ctx1.action_count(), 2);
+        assert_eq!(ctx1.action_count(), 3);
 
         // Second update with tiny price change -- should NOT requote
         // 10 bps of 50000 = 50, so a move of ~1 is well under threshold
@@ -452,15 +442,13 @@ mod tests {
         let book1 = make_book(50000.0, 50001.0);
         let mut ctx1 = make_context();
         strat.on_book_update(&mut ctx1, &book1);
-        assert_eq!(ctx1.action_count(), 2);
+        assert_eq!(ctx1.action_count(), 3); // cancel_all + bid + ask
 
         // Big move: ~100 bps
         let book2 = make_book(50500.0, 50501.0);
         let mut ctx2 = make_context();
         strat.on_book_update(&mut ctx2, &book2);
-        // Should generate cancels (0, since active_bids/asks are empty tracking)
-        // plus new orders
-        assert!(ctx2.action_count() >= 2, "should requote on big move");
+        assert_eq!(ctx2.action_count(), 3, "should requote on big move");
     }
 
     #[test]
@@ -486,12 +474,8 @@ mod tests {
     }
 
     #[test]
-    fn test_on_fill_removes_active_order() {
+    fn test_on_fill_is_handled() {
         let mut strat = MarketMakingStrategy::from_params(&default_params());
-        strat.active_bids.push(OrderId(1));
-        strat.active_bids.push(OrderId(2));
-        strat.active_asks.push(OrderId(3));
-
         let fill = Fill {
             order_id: OrderId(1),
             exchange: Exchange::Binance,
@@ -505,10 +489,7 @@ mod tests {
 
         let mut ctx = make_context();
         strat.on_fill(&mut ctx, &fill);
-
-        assert_eq!(strat.active_bids.len(), 1);
-        assert_eq!(strat.active_bids[0], OrderId(2));
-        assert_eq!(strat.active_asks.len(), 1);
+        // on_fill is a no-op for simple_mm (cancel_all handles cleanup)
     }
 
     #[test]
@@ -575,14 +556,17 @@ mod tests {
         strat.on_book_update(&mut ctx_short, &book);
         let short_actions = ctx_short.drain_actions();
 
-        let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = &flat_actions[0] {
+        let flat_submits: Vec<_> = flat_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let short_submits: Vec<_> = short_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+
+        let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = flat_submits[0] {
             price.to_f64()
         } else {
             panic!("expected Submit");
         };
 
         let short_bid =
-            if let crate::context::OrderAction::Submit { price, .. } = &short_actions[0] {
+            if let crate::context::OrderAction::Submit { price, .. } = short_submits[0] {
                 price.to_f64()
             } else {
                 panic!("expected Submit");

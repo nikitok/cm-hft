@@ -277,12 +277,8 @@ mod tests {
         let actions = ctx.drain_actions();
         assert!(!actions.is_empty());
 
-        // Verify we got Submit actions
-        for action in &actions {
-            match action {
-                OrderAction::Submit { .. } => {}
-                _ => panic!("expected only Submit actions from first book update"),
-            }
-        }
+        // Verify we got CancelAll + Submit actions
+        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, OrderAction::Submit { .. })).collect();
+        assert!(submits.len() >= 2, "expected at least 2 Submit actions, got {}", submits.len());
     }
 }
