@@ -1,0 +1,64 @@
+# =============================================================================
+# CM.HFT — Market Data Recorder Docker Image (Rust)
+# =============================================================================
+# Multi-stage build: compile in rust:1.77-slim, run in debian:12-slim.
+# Debian slim (not distroless) because the entrypoint script needs shell +
+# MinIO client (mc) for uploading recorded data to S3.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build
+# ---------------------------------------------------------------------------
+FROM rust:1.77-slim AS builder
+
+# Install build dependencies for OpenSSL (required by many Rust HTTP crates)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace manifests first for dependency caching.
+# Docker layer caching means dependencies only rebuild when Cargo.toml/lock change.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+# Build the recorder binary in release mode
+RUN cargo build --release --bin cm-record
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime
+# ---------------------------------------------------------------------------
+FROM debian:12-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MinIO client for S3 uploads
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc \
+        -o /usr/local/bin/mc && \
+    chmod +x /usr/local/bin/mc
+
+# Non-root user
+RUN groupadd --gid 1000 recorder && \
+    useradd --uid 1000 --gid recorder --create-home recorder
+
+# Copy binary and entrypoint
+COPY --from=builder /app/target/release/cm-record /usr/local/bin/cm-record
+COPY infra/deploy/scripts/record-and-upload.sh /usr/local/bin/record-and-upload.sh
+RUN chmod +x /usr/local/bin/record-and-upload.sh
+
+# Data directory
+RUN mkdir -p /data && chown recorder:recorder /data
+VOLUME ["/data"]
+
+USER recorder
+WORKDIR /data
+
+ENTRYPOINT ["/usr/local/bin/record-and-upload.sh"]

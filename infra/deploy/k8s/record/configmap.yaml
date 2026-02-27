@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-record-config
+  namespace: default
+  labels:
+    app: cm-record
+data:
+  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT"
+  RECORD_DURATION: "55m"
+  S3_BUCKET: "market-data"
+  S3_PREFIX: "recordings"
+  S3_ENDPOINT: "https://minio.example.com"

@@ -1,14 +1,16 @@
-//! cm-record — Record Bybit market data to gzipped JSONL files.
+//! cm-record — Record Bybit market data to JSONL files.
 //!
-//! Connects to Bybit public WebSocket, subscribes to orderbook and trade
-//! topics for the specified symbols, and writes normalized events to
-//! `testdata/bybit_{symbol}_{duration}.jsonl.gz`.
+//! Writes to plain `.jsonl` during recording for crash safety. On clean
+//! shutdown, compresses to `.jsonl.gz` and removes the uncompressed file.
+//! If the process is killed mid-session, the `.jsonl` file survives with
+//! all data up to the last write — the shell script will compress it on
+//! next run.
 //!
 //! Usage:
 //!   cm-record --symbols BTCUSDT,ETHUSDT --duration 30m --output testdata/
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -71,6 +73,36 @@ fn parse_duration(s: &str) -> Result<Duration> {
     }
 }
 
+/// Build the base filename (without extension) for a symbol.
+fn base_filename(symbol: &str, duration_label: &str, timestamp: bool) -> String {
+    if timestamp {
+        let now = chrono::Local::now();
+        format!(
+            "bybit_{}_{}",
+            symbol.to_lowercase(),
+            now.format("%Y-%m-%d_%H:%M")
+        )
+    } else {
+        format!(
+            "bybit_{}_{}",
+            symbol.to_lowercase(),
+            duration_label
+        )
+    }
+}
+
+/// Compress a .jsonl file to .jsonl.gz and remove the original.
+fn compress_file(jsonl_path: &PathBuf, gz_path: &PathBuf) -> Result<()> {
+    let input = std::fs::File::open(jsonl_path)?;
+    let reader = std::io::BufReader::new(input);
+    let output = std::fs::File::create(gz_path)?;
+    let mut encoder = GzEncoder::new(output, Compression::default());
+    std::io::copy(&mut reader.take(u64::MAX), &mut encoder)?;
+    encoder.finish()?;
+    std::fs::remove_file(jsonl_path)?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     cm_core::logging::init_tracing(true);
@@ -93,28 +125,23 @@ async fn main() -> Result<()> {
         "starting recorder"
     );
 
-    // Open gzipped writers per symbol.
-    let mut writers: HashMap<String, GzEncoder<std::fs::File>> = HashMap::new();
+    // Build paths and open plain JSONL writers (crash-safe).
+    struct SymWriter {
+        writer: BufWriter<std::fs::File>,
+        jsonl_path: PathBuf,
+        gz_path: PathBuf,
+    }
+
+    let mut writers: HashMap<String, SymWriter> = HashMap::new();
     for symbol in &args.symbols {
-        let filename = if args.timestamp {
-            let now = chrono::Local::now();
-            format!(
-                "bybit_{}_{}.jsonl.gz",
-                symbol.to_lowercase(),
-                now.format("%Y-%m-%d_%H:%M")
-            )
-        } else {
-            format!(
-                "bybit_{}_{}.jsonl.gz",
-                symbol.to_lowercase(),
-                duration_label
-            )
-        };
-        let path = args.output.join(&filename);
-        let file = std::fs::File::create(&path)?;
-        let encoder = GzEncoder::new(file, Compression::default());
-        writers.insert(symbol.clone(), encoder);
-        tracing::info!(path = %path.display(), "opened output file");
+        let base = base_filename(symbol, duration_label, args.timestamp);
+        let jsonl_path = args.output.join(format!("{}.jsonl", base));
+        let gz_path = args.output.join(format!("{}.jsonl.gz", base));
+
+        let file = std::fs::File::create(&jsonl_path)?;
+        let writer = BufWriter::new(file);
+        writers.insert(symbol.clone(), SymWriter { writer, jsonl_path: jsonl_path.clone(), gz_path });
+        tracing::info!(path = %jsonl_path.display(), "writing to plain JSONL (will compress on clean shutdown)");
     }
 
     // Event counters per symbol.
@@ -149,6 +176,18 @@ async fn main() -> Result<()> {
         shutdown_clone.cancel();
     });
 
+    // SIGTERM handler for graceful shutdown in K8s.
+    let shutdown_sigterm = shutdown.clone();
+    tokio::spawn(async move {
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .expect("failed to register SIGTERM handler");
+        sigterm.recv().await;
+        tracing::info!("SIGTERM received, shutting down...");
+        shutdown_sigterm.cancel();
+    });
+
     // Timer-based shutdown.
     let shutdown_timer = shutdown.clone();
     tokio::spawn(async move {
@@ -176,6 +215,10 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Periodic flush interval (every 5s) to minimize data loss on crash.
+    let mut flush_counter: u64 = 0;
+    let flush_interval: u64 = 5000; // events between flushes
+
     // Main event loop: drain both channels until shutdown.
     loop {
         tokio::select! {
@@ -185,42 +228,57 @@ async fn main() -> Result<()> {
             }
             Some(book) = book_rx.recv() => {
                 let sym = book.symbol.0.clone();
-                if let Some(writer) = writers.get_mut(&sym) {
+                if let Some(sw) = writers.get_mut(&sym) {
                     let event = RecordedEvent {
                         ts_ns: book.timestamp.as_nanos(),
                         kind: "book",
                         data: serde_json::to_value(&book)?,
                     };
-                    serde_json::to_writer(&mut *writer, &event)?;
-                    writer.write_all(b"\n")?;
+                    serde_json::to_writer(&mut sw.writer, &event)?;
+                    sw.writer.write_all(b"\n")?;
                     if let Some(c) = counters.get(&sym) {
                         c.fetch_add(1, Ordering::Relaxed);
+                    }
+                    flush_counter += 1;
+                    if flush_counter % flush_interval == 0 {
+                        sw.writer.flush()?;
                     }
                 }
             }
             Some(trade) = trade_rx.recv() => {
                 let sym = trade.symbol.0.clone();
-                if let Some(writer) = writers.get_mut(&sym) {
+                if let Some(sw) = writers.get_mut(&sym) {
                     let event = RecordedEvent {
                         ts_ns: trade.timestamp.as_nanos(),
                         kind: "trade",
                         data: serde_json::to_value(&trade)?,
                     };
-                    serde_json::to_writer(&mut *writer, &event)?;
-                    writer.write_all(b"\n")?;
+                    serde_json::to_writer(&mut sw.writer, &event)?;
+                    sw.writer.write_all(b"\n")?;
                     if let Some(c) = counters.get(&sym) {
                         c.fetch_add(1, Ordering::Relaxed);
+                    }
+                    flush_counter += 1;
+                    if flush_counter % flush_interval == 0 {
+                        sw.writer.flush()?;
                     }
                 }
             }
         }
     }
 
-    // Flush and close all writers.
-    for (sym, writer) in writers {
+    // Flush, compress, and close all writers.
+    for (sym, mut sw) in writers {
         let count = counters.get(&sym).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0);
-        writer.finish()?;
-        tracing::info!(symbol = %sym, events = count, "file closed");
+
+        // Flush the BufWriter.
+        sw.writer.flush()?;
+        drop(sw.writer); // close the file handle
+
+        // Compress .jsonl → .jsonl.gz
+        tracing::info!(symbol = %sym, events = count, src = %sw.jsonl_path.display(), "compressing");
+        compress_file(&sw.jsonl_path, &sw.gz_path)?;
+        tracing::info!(symbol = %sym, events = count, dst = %sw.gz_path.display(), "file closed");
     }
 
     ws_handle.abort();

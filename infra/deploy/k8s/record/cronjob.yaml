@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cm-record
+  namespace: default
+  labels:
+    app: cm-record
+spec:
+  schedule: "0 * * * *"          # Every hour
+  concurrencyPolicy: Forbid       # Skip if previous still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 4200  # 1h10m — recording + upload + buffer
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: cm-record
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: recorder
+              image: ghcr.io/OWNER/cm-hft/cm-record:latest  # Update OWNER
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              envFrom:
+                - configMapRef:
+                    name: cm-record-config
+                - secretRef:
+                    name: cm-record-s3-credentials
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          terminationGracePeriodSeconds: 30
+          volumes:
+            - name: data
+              emptyDir:
+                sizeLimit: 1Gi
