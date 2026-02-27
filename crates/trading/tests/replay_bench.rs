@@ -6,7 +6,9 @@ use std::path::Path;
 
 use cm_core::types::Exchange;
 use cm_strategy::traits::StrategyParams;
-use replay_harness::{find_series_files, load_events, load_events_multi, ReplayTestHarness, SimConfig};
+use replay_harness::{
+    find_series_files, load_events, load_events_multi, ReplayTestHarness, SimConfig,
+};
 
 fn data_path(symbol: &str) -> Option<String> {
     let durations = ["30m", "5m", "3m", "1h"];
@@ -24,12 +26,7 @@ fn data_path(symbol: &str) -> Option<String> {
     None
 }
 
-fn run_and_report(
-    strategy_name: &str,
-    params: &StrategyParams,
-    symbol: &str,
-    path: &str,
-) {
+fn run_and_report(strategy_name: &str, params: &StrategyParams, symbol: &str, path: &str) {
     run_and_report_with_config(strategy_name, params, symbol, path, SimConfig::default());
 }
 
@@ -51,13 +48,27 @@ fn run_and_report_with_config(
         .count();
 
     let start = std::time::Instant::now();
-    let mut harness = ReplayTestHarness::with_config(strategy_name, params.clone(), Exchange::Bybit, symbol, sim_config);
+    let mut harness = ReplayTestHarness::with_config(
+        strategy_name,
+        params.clone(),
+        Exchange::Bybit,
+        symbol,
+        sim_config,
+    );
     let result = harness.run(&events);
     let elapsed = start.elapsed();
 
     // PnL stats
-    let pnl_min = result.pnl_series.iter().cloned().fold(f64::INFINITY, f64::min);
-    let pnl_max = result.pnl_series.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let pnl_min = result
+        .pnl_series
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let pnl_max = result
+        .pnl_series
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
     let pnl_final = result.pnl_series.last().copied().unwrap_or(0.0);
 
     // Drawdown
@@ -74,16 +85,24 @@ fn run_and_report_with_config(
     }
 
     println!("┌─────────────────────────────────────────────────────────┐");
-    println!("│  {} / {}",  strategy_name, symbol);
+    println!("│  {} / {}", strategy_name, symbol);
     println!("├─────────────────────────────────────────────────────────┤");
-    println!("│  Input events:  {} book + {} trade = {} total", book_count, trade_count, events.len());
+    println!(
+        "│  Input events:  {} book + {} trade = {} total",
+        book_count,
+        trade_count,
+        events.len()
+    );
     println!("│  Replay time:   {:?}", elapsed);
     println!("├─────────────────────────────────────────────────────────┤");
     println!("│  Orders placed: {}", result.order_count);
     println!("│  Fills:         {}", result.fill_count);
     println!("│  Max position:  {:.6}", result.max_position);
     println!("├─────────────────────────────────────────────────────────┤");
-    println!("│  Peak notional: ${:.2}  (max |pos| × price)", result.peak_notional);
+    println!(
+        "│  Peak notional: ${:.2}  (max |pos| × price)",
+        result.peak_notional
+    );
     println!("│  Margin 1x:     ${:.2}", result.peak_margin_1x);
     println!("│  Margin 5x:     ${:.2}", result.peak_notional / 5.0);
     println!("│  Margin 10x:    ${:.2}", result.peak_notional / 10.0);
@@ -94,8 +113,14 @@ fn run_and_report_with_config(
     println!("│  Max drawdown:  ${:.4}", max_dd);
     println!("│  Fee total:     ${:.4}", result.fee_total);
     if result.peak_margin_1x > 0.0 {
-        println!("│  ROC (1x):      {:.2}%", result.total_pnl / result.peak_margin_1x * 100.0);
-        println!("│  ROC (10x):     {:.2}%", result.total_pnl / (result.peak_notional / 10.0) * 100.0);
+        println!(
+            "│  ROC (1x):      {:.2}%",
+            result.total_pnl / result.peak_margin_1x * 100.0
+        );
+        println!(
+            "│  ROC (10x):     {:.2}%",
+            result.total_pnl / (result.peak_notional / 10.0) * 100.0
+        );
     }
     println!("└─────────────────────────────────────────────────────────┘");
     println!();
@@ -108,43 +133,59 @@ fn bench_all_strategies() {
         (
             "market_making",
             "default",
-            StrategyParams { params: serde_json::json!({}) },
+            StrategyParams {
+                params: serde_json::json!({}),
+            },
         ),
         (
             "market_making",
             "tight spread",
-            StrategyParams { params: serde_json::json!({"spread_bps": 5.0}) },
+            StrategyParams {
+                params: serde_json::json!({"spread_bps": 5.0}),
+            },
         ),
         (
             "market_making",
             "wide spread",
-            StrategyParams { params: serde_json::json!({"spread_bps": 20.0}) },
+            StrategyParams {
+                params: serde_json::json!({"spread_bps": 20.0}),
+            },
         ),
         (
             "market_making",
             "small size",
-            StrategyParams { params: serde_json::json!({"order_size": 0.005}) },
+            StrategyParams {
+                params: serde_json::json!({"order_size": 0.005}),
+            },
         ),
         (
             "market_making",
             "large size",
-            StrategyParams { params: serde_json::json!({"order_size": 0.05}) },
+            StrategyParams {
+                params: serde_json::json!({"order_size": 0.05}),
+            },
         ),
         // ── Adaptive MM variants ──
         (
             "adaptive_mm",
             "default",
-            StrategyParams { params: serde_json::json!({}) },
+            StrategyParams {
+                params: serde_json::json!({}),
+            },
         ),
         (
             "adaptive_mm",
             "high risk aversion",
-            StrategyParams { params: serde_json::json!({"risk_aversion": 1.0, "max_position": 0.005}) },
+            StrategyParams {
+                params: serde_json::json!({"risk_aversion": 1.0, "max_position": 0.005}),
+            },
         ),
         (
             "adaptive_mm",
             "wide spread",
-            StrategyParams { params: serde_json::json!({"base_spread_bps": 15.0, "min_spread_bps": 5.0}) },
+            StrategyParams {
+                params: serde_json::json!({"base_spread_bps": 15.0, "min_spread_bps": 5.0}),
+            },
         ),
     ];
 
@@ -183,7 +224,11 @@ fn bench_improvement_stages() {
     let stages: Vec<(&str, SimConfig, serde_json::Value)> = vec![
         (
             "Baseline",
-            SimConfig { maker_fee_bps: 0.0, strict_crossing: false },
+            SimConfig {
+                maker_fee_bps: 0.0,
+                strict_crossing: false,
+                ..SimConfig::legacy()
+            },
             serde_json::json!({
                 "risk_aversion": 0.0001,
                 "vpin_factor": 0.0,
@@ -269,7 +314,9 @@ fn bench_improvement_stages() {
         println!("  {:-<95}", "");
 
         for (i, (name, sim_config, params_json)) in stages.iter().enumerate() {
-            let params = StrategyParams { params: params_json.clone() };
+            let params = StrategyParams {
+                params: params_json.clone(),
+            };
             let mut harness = ReplayTestHarness::with_config(
                 "adaptive_mm",
                 params,
@@ -294,8 +341,14 @@ fn bench_improvement_stages() {
 
             println!(
                 "  {:>2} | {:<15} | {:>6} | {:>8.6} | {:>12.4} | {:>10.4} | {:>12.2} | {:>10.4}",
-                i, name, result.fill_count, result.max_position, result.total_pnl,
-                max_dd, result.peak_notional, result.fee_total,
+                i,
+                name,
+                result.fill_count,
+                result.max_position,
+                result.total_pnl,
+                max_dd,
+                result.peak_notional,
+                result.fee_total,
             );
         }
 
@@ -323,14 +376,20 @@ fn bench_diagnostic() {
     let mut low = f64::INFINITY;
     for (_, event) in &events {
         if let replay_harness::ReplayEvent::Book(update) = event {
-            if let (Some(&(bid_p, _)), Some(&(ask_p, _))) = (update.bids.first(), update.asks.first()) {
+            if let (Some(&(bid_p, _)), Some(&(ask_p, _))) =
+                (update.bids.first(), update.asks.first())
+            {
                 let mid = (bid_p.to_f64() + ask_p.to_f64()) / 2.0;
                 if first_mid.is_none() {
                     first_mid = Some(mid);
                 }
                 last_mid = Some(mid);
-                if mid > high { high = mid; }
-                if mid < low { low = mid; }
+                if mid > high {
+                    high = mid;
+                }
+                if mid < low {
+                    low = mid;
+                }
             }
         }
     }
@@ -348,8 +407,16 @@ fn bench_diagnostic() {
     println!("  Last mid:   ${:.2}", last);
     println!("  High:       ${:.2}", high);
     println!("  Low:        ${:.2}", low);
-    println!("  Range:      {:.1} bps ({:.2}%)", range_bps, range_bps / 100.0);
-    println!("  Net drift:  {:.1} bps ({:.2}%)", drift_bps, drift_bps / 100.0);
+    println!(
+        "  Range:      {:.1} bps ({:.2}%)",
+        range_bps,
+        range_bps / 100.0
+    );
+    println!(
+        "  Net drift:  {:.1} bps ({:.2}%)",
+        drift_bps,
+        drift_bps / 100.0
+    );
     println!();
 
     // Run with Full Stack params and track per-fill stats
@@ -365,7 +432,11 @@ fn bench_diagnostic() {
     };
 
     let mut harness = ReplayTestHarness::with_config(
-        "adaptive_mm", params, Exchange::Bybit, "BTCUSDT", SimConfig::default(),
+        "adaptive_mm",
+        params,
+        Exchange::Bybit,
+        "BTCUSDT",
+        SimConfig::default(),
     );
     let result = harness.run(&events);
 
@@ -384,7 +455,10 @@ fn bench_diagnostic() {
     println!("  Final M2M:     ${:.4}", pnl_final);
     println!("  PnL per fill:  ${:.6}", pnl_per_fill);
     println!("  Fee total:     ${:.4} (rebate)", result.fee_total);
-    println!("  PnL ex-fees:   ${:.4}", result.total_pnl - result.fee_total);
+    println!(
+        "  PnL ex-fees:   ${:.4}",
+        result.total_pnl - result.fee_total
+    );
     println!();
 }
 
@@ -423,8 +497,14 @@ fn bench_param_sweep() {
     println!();
     println!("═══════════════════════════════════════════════════════════════════════");
     println!("  PARAMETER SWEEP — adaptive_mm on BTCUSDT");
-    println!("  {} combinations", risk_aversions.len() * fill_intensities.len()
-        * vpin_factors.len() * decay_powers.len() * time_horizons.len());
+    println!(
+        "  {} combinations",
+        risk_aversions.len()
+            * fill_intensities.len()
+            * vpin_factors.len()
+            * decay_powers.len()
+            * time_horizons.len()
+    );
     println!("═══════════════════════════════════════════════════════════════════════");
     println!();
 
@@ -458,9 +538,13 @@ fn bench_param_sweep() {
                         let mut peak = f64::NEG_INFINITY;
                         let mut max_dd = 0.0_f64;
                         for &pnl in &result.pnl_series {
-                            if pnl > peak { peak = pnl; }
+                            if pnl > peak {
+                                peak = pnl;
+                            }
                             let dd = peak - pnl;
-                            if dd > max_dd { max_dd = dd; }
+                            if dd > max_dd {
+                                max_dd = dd;
+                            }
                         }
 
                         results.push(SweepResult {
@@ -481,7 +565,11 @@ fn bench_param_sweep() {
     }
 
     // Sort by PnL descending.
-    results.sort_by(|a, b| b.pnl.partial_cmp(&a.pnl).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.pnl
+            .partial_cmp(&a.pnl)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Print top 20 and bottom 5.
     println!(
@@ -527,14 +615,38 @@ fn load_series(sym: &str) -> Option<Vec<(u64, replay_harness::ReplayEvent)>> {
     None
 }
 
+/// Discover all symbols with series data in testdata/.
+/// Looks for timestamped files matching `bybit_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz`.
+fn discover_symbols() -> Vec<String> {
+    let data_dirs = ["testdata", "../../testdata"];
+    let mut symbols = std::collections::BTreeSet::new();
+    let re =
+        regex::Regex::new(r"^bybit_([a-z0-9]+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}\.jsonl\.gz$").unwrap();
+    for dir in &data_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if let Some(caps) = re.captures(&name) {
+                    symbols.insert(caps[1].to_string());
+                }
+            }
+        }
+    }
+    symbols.into_iter().collect()
+}
+
 /// Helper: compute max drawdown from PnL series.
 fn max_drawdown(pnl_series: &[f64]) -> f64 {
     let mut peak = f64::NEG_INFINITY;
     let mut max_dd = 0.0_f64;
     for &pnl in pnl_series {
-        if pnl > peak { peak = pnl; }
+        if pnl > peak {
+            peak = pnl;
+        }
         let dd = peak - pnl;
-        if dd > max_dd { max_dd = dd; }
+        if dd > max_dd {
+            max_dd = dd;
+        }
     }
     max_dd
 }
@@ -569,142 +681,213 @@ fn bench_series() {
     let configs: Vec<(&str, &str, StrategyParams, SimConfig)> = vec![
         // ── Simple MM variants ──
         (
-            "market_making", "simple_mm default",
-            StrategyParams { params: serde_json::json!({}) },
+            "market_making",
+            "simple_mm default",
+            StrategyParams {
+                params: serde_json::json!({}),
+            },
             SimConfig::default(),
         ),
         (
-            "market_making", "simple_mm tight",
-            StrategyParams { params: serde_json::json!({"spread_bps": 5.0}) },
+            "market_making",
+            "simple_mm tight",
+            StrategyParams {
+                params: serde_json::json!({"spread_bps": 5.0}),
+            },
             SimConfig::default(),
         ),
         (
-            "market_making", "simple_mm wide",
-            StrategyParams { params: serde_json::json!({"spread_bps": 20.0}) },
+            "market_making",
+            "simple_mm wide",
+            StrategyParams {
+                params: serde_json::json!({"spread_bps": 20.0}),
+            },
             SimConfig::default(),
         ),
         // ── Adaptive MM improvement stages ──
         (
-            "adaptive_mm", "baseline (no features)",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.0001,
-                "vpin_factor": 0.0,
-                "size_decay_power": 0.0,
-                "reduce_boost": 0.0
-            })},
-            SimConfig { maker_fee_bps: 0.0, strict_crossing: false },
+            "adaptive_mm",
+            "baseline (no features)",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.0001,
+                    "vpin_factor": 0.0,
+                    "size_decay_power": 0.0,
+                    "reduce_boost": 0.0
+                }),
+            },
+            SimConfig {
+                maker_fee_bps: 0.0,
+                strict_crossing: false,
+                ..SimConfig::legacy()
+            },
         ),
         (
-            "adaptive_mm", "realistic sim only",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.0001,
-                "vpin_factor": 0.0,
-                "size_decay_power": 0.0,
-                "reduce_boost": 0.0
-            })},
+            "adaptive_mm",
+            "realistic sim only",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.0001,
+                    "vpin_factor": 0.0,
+                    "size_decay_power": 0.0,
+                    "reduce_boost": 0.0
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "+ A-S pricing",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.3,
-                "fill_intensity": 1.5,
-                "time_horizon": 1.0,
-                "vpin_factor": 0.0,
-                "size_decay_power": 0.0,
-                "reduce_boost": 0.0
-            })},
+            "adaptive_mm",
+            "+ A-S pricing",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 0.0,
+                    "size_decay_power": 0.0,
+                    "reduce_boost": 0.0
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "+ A-S + VPIN",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.3,
-                "fill_intensity": 1.5,
-                "time_horizon": 1.0,
-                "vpin_factor": 2.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 0.0,
-                "reduce_boost": 0.0
-            })},
+            "adaptive_mm",
+            "+ A-S + VPIN",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 0.0,
+                    "reduce_boost": 0.0
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "FULL STACK",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.3,
-                "fill_intensity": 1.5,
-                "time_horizon": 1.0,
-                "vpin_factor": 2.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 2.0,
-                "reduce_boost": 0.5
-            })},
+            "adaptive_mm",
+            "FULL STACK (legacy sim)",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5
+                }),
+            },
+            SimConfig::legacy(),
+        ),
+        (
+            "adaptive_mm",
+            "FULL STACK (queue sim)",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5
+                }),
+            },
             SimConfig::default(),
         ),
         // ── Tuned variants ──
         (
-            "adaptive_mm", "tight: γ=0.1 κ=3 τ=0.5",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.1,
-                "fill_intensity": 3.0,
-                "time_horizon": 0.5,
-                "vpin_factor": 2.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 2.0,
-                "reduce_boost": 0.5
-            })},
+            "adaptive_mm",
+            "tight: γ=0.1 κ=3 τ=0.5",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.1,
+                    "fill_intensity": 3.0,
+                    "time_horizon": 0.5,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "wide: γ=0.5 κ=1.5 τ=2",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.5,
-                "fill_intensity": 1.5,
-                "time_horizon": 2.0,
-                "vpin_factor": 2.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 2.0,
-                "reduce_boost": 0.5
-            })},
+            "adaptive_mm",
+            "wide: γ=0.5 κ=1.5 τ=2",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.5,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 2.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "aggr: γ=0.1 κ=3 τ=1",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 0.1,
-                "fill_intensity": 3.0,
-                "time_horizon": 1.0,
-                "vpin_factor": 1.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 1.0,
-                "reduce_boost": 0.5
-            })},
+            "adaptive_mm",
+            "aggr: γ=0.1 κ=3 τ=1",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.1,
+                    "fill_intensity": 3.0,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 1.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 1.0,
+                    "reduce_boost": 0.5
+                }),
+            },
             SimConfig::default(),
         ),
         (
-            "adaptive_mm", "conserv: γ=1.0 κ=1.5 τ=2",
-            StrategyParams { params: serde_json::json!({
-                "risk_aversion": 1.0,
-                "fill_intensity": 1.5,
-                "time_horizon": 2.0,
-                "vpin_factor": 2.0,
-                "vpin_bucket_size": 50000.0,
-                "vpin_n_buckets": 20,
-                "size_decay_power": 2.0,
-                "reduce_boost": 0.5,
-                "max_position": 0.05
-            })},
+            "adaptive_mm",
+            "conserv: γ=1.0 κ=1.5 τ=2",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 1.0,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 2.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "max_position": 0.05
+                }),
+            },
             SimConfig::default(),
         ),
     ];
 
-    for sym in &["btcusdt", "ethusdt"] {
+    let symbols = discover_symbols();
+    if symbols.is_empty() {
+        println!("\n  SKIP: no series data found in testdata/\n");
+        return;
+    }
+    println!(
+        "  Discovered symbols: {}",
+        symbols
+            .iter()
+            .map(|s| s.to_uppercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    for sym in &symbols {
         let events = match load_series(sym) {
             Some(e) => e,
             None => {
@@ -713,8 +896,14 @@ fn bench_series() {
             }
         };
 
-        let book_count = events.iter().filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_))).count();
-        let trade_count = events.iter().filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Trade(_))).count();
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        let trade_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Trade(_)))
+            .count();
 
         // Data diagnostic: price range
         let mut first_mid: Option<f64> = None;
@@ -723,25 +912,53 @@ fn bench_series() {
         let mut low = f64::INFINITY;
         for (_, event) in &events {
             if let replay_harness::ReplayEvent::Book(update) = event {
-                if let (Some(&(bid_p, _)), Some(&(ask_p, _))) = (update.bids.first(), update.asks.first()) {
+                if let (Some(&(bid_p, _)), Some(&(ask_p, _))) =
+                    (update.bids.first(), update.asks.first())
+                {
                     let mid = (bid_p.to_f64() + ask_p.to_f64()) / 2.0;
-                    if first_mid.is_none() { first_mid = Some(mid); }
+                    if first_mid.is_none() {
+                        first_mid = Some(mid);
+                    }
                     last_mid = Some(mid);
-                    if mid > high { high = mid; }
-                    if mid < low { low = mid; }
+                    if mid > high {
+                        high = mid;
+                    }
+                    if mid < low {
+                        low = mid;
+                    }
                 }
             }
         }
         let first = first_mid.unwrap_or(0.0);
         let last = last_mid.unwrap_or(0.0);
-        let range_bps = if first > 0.0 { (high - low) / first * 10_000.0 } else { 0.0 };
-        let drift_bps = if first > 0.0 { (last - first) / first * 10_000.0 } else { 0.0 };
+        let range_bps = if first > 0.0 {
+            (high - low) / first * 10_000.0
+        } else {
+            0.0
+        };
+        let drift_bps = if first > 0.0 {
+            (last - first) / first * 10_000.0
+        } else {
+            0.0
+        };
 
         println!();
         println!("  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐");
-        println!("  │  {} — 8h series: {} book + {} trade = {} events", sym.to_uppercase(), book_count, trade_count, events.len());
-        println!("  │  Price: ${:.2} → ${:.2}  range={:.0}bps  drift={:+.0}bps ({:+.2}%)",
-            first, last, range_bps, drift_bps, drift_bps / 100.0);
+        println!(
+            "  │  {} — 8h series: {} book + {} trade = {} events",
+            sym.to_uppercase(),
+            book_count,
+            trade_count,
+            events.len()
+        );
+        println!(
+            "  │  Price: ${:.2} → ${:.2}  range={:.0}bps  drift={:+.0}bps ({:+.2}%)",
+            first,
+            last,
+            range_bps,
+            drift_bps,
+            drift_bps / 100.0
+        );
         println!("  ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤");
         println!(
             "  │ {:>2} | {:<28} | {:>6} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>8}",
@@ -752,7 +969,11 @@ fn bench_series() {
         for (i, (strat_name, label, params, sim_config)) in configs.iter().enumerate() {
             let start = std::time::Instant::now();
             let result = run_strategy_on_events(
-                strat_name, params, &sym.to_uppercase(), &events, sim_config.clone(),
+                strat_name,
+                params,
+                &sym.to_uppercase(),
+                &events,
+                sim_config.clone(),
             );
             let elapsed = start.elapsed();
 
@@ -774,6 +995,179 @@ fn bench_series() {
 
         println!("  │ {:-<123}", "");
         println!("  └─────────────────────────────────────────────────────────────────────────────────────────────────────┘");
+    }
+    println!();
+}
+
+/// Sim realism comparison: demonstrates fill count reduction with queue model.
+#[test]
+fn bench_sim_realism() {
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  SIM REALISM COMPARISON — queue position + trade-based fill matching");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+
+    // Realism stages: progressively more realistic simulation.
+    let stages: Vec<(&str, SimConfig)> = vec![
+        ("Legacy (book-based)", SimConfig::legacy()),
+        (
+            "Queue only",
+            SimConfig {
+                queue_model: true,
+                partial_fills: false,
+                latency_ns: 0,
+                fill_probability: 1.0,
+                ..SimConfig::default()
+            },
+        ),
+        (
+            "+ Partial fills",
+            SimConfig {
+                queue_model: true,
+                partial_fills: true,
+                latency_ns: 0,
+                fill_probability: 1.0,
+                ..SimConfig::default()
+            },
+        ),
+        (
+            "+ Latency 5ms",
+            SimConfig {
+                queue_model: true,
+                partial_fills: true,
+                latency_ns: 5_000_000,
+                fill_probability: 1.0,
+                ..SimConfig::default()
+            },
+        ),
+        (
+            "+ Pessimistic 50%",
+            SimConfig {
+                queue_model: true,
+                partial_fills: true,
+                latency_ns: 5_000_000,
+                fill_probability: 0.5,
+                ..SimConfig::default()
+            },
+        ),
+    ];
+
+    // Strategy configs to test.
+    let strat_configs: Vec<(&str, StrategyParams)> = vec![(
+        "adaptive_mm",
+        StrategyParams {
+            params: serde_json::json!({
+                "risk_aversion": 0.3,
+                "fill_intensity": 1.5,
+                "time_horizon": 1.0,
+                "vpin_factor": 2.0,
+                "vpin_bucket_size": 50000.0,
+                "vpin_n_buckets": 20,
+                "size_decay_power": 2.0,
+                "reduce_boost": 0.5,
+            }),
+        },
+    )];
+
+    let symbols = discover_symbols();
+    // Fallback to single-file data if no series.
+    let symbol_sources: Vec<(String, Vec<(u64, replay_harness::ReplayEvent)>)> =
+        if symbols.is_empty() {
+            let mut sources = Vec::new();
+            for sym in &["btcusdt", "ethusdt"] {
+                if let Some(path) = data_path(sym) {
+                    let events = load_events(&path).expect("failed to load");
+                    sources.push((sym.to_string(), events));
+                }
+            }
+            sources
+        } else {
+            symbols
+                .iter()
+                .filter_map(|sym| load_series(sym).map(|events| (sym.clone(), events)))
+                .collect()
+        };
+
+    if symbol_sources.is_empty() {
+        println!("\n  SKIP: no data found\n");
+        return;
+    }
+
+    for (sym, events) in &symbol_sources {
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        let trade_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Trade(_)))
+            .count();
+
+        for (strat_name, params) in &strat_configs {
+            println!();
+            println!(
+                "  {} / {} — {} book + {} trade events",
+                strat_name,
+                sym.to_uppercase(),
+                book_count,
+                trade_count
+            );
+            println!("  {:-<130}", "");
+            println!(
+                "  {:>2} | {:<22} | {:>6} | {:>8} | {:>8} | {:>10} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10}",
+                "#", "Stage", "Fills", "Partial", "Avg Size", "Realized$", "$/fill", "Max DD$", "Max Pos", "Peak Not$", "QueueMiss"
+            );
+            println!("  {:-<130}", "");
+
+            let mut baseline_fills: Option<usize> = None;
+
+            for (i, (name, sim_config)) in stages.iter().enumerate() {
+                let start = std::time::Instant::now();
+                let result = run_strategy_on_events(
+                    strat_name,
+                    params,
+                    &sym.to_uppercase(),
+                    events,
+                    sim_config.clone(),
+                );
+                let elapsed = start.elapsed();
+
+                let dd = max_drawdown(&result.pnl_series);
+                let pnl_per_fill = if result.fill_count > 0 {
+                    result.total_pnl / result.fill_count as f64
+                } else {
+                    0.0
+                };
+                // Approximate average fill size: total fills / fill_count not directly available,
+                // but we can estimate from max_position changes. Use order_count as proxy.
+                let avg_fill_size = if result.fill_count > 0 {
+                    // Cannot easily get total fill volume without tracking it; skip for now.
+                    format!("{:>8}", "-")
+                } else {
+                    format!("{:>8}", "0")
+                };
+
+                let ratio_str = match baseline_fills {
+                    Some(base) if base > 0 && result.fill_count > 0 => {
+                        format!("  ({:.1}x fewer)", base as f64 / result.fill_count as f64)
+                    }
+                    _ => String::new(),
+                };
+                if baseline_fills.is_none() {
+                    baseline_fills = Some(result.fill_count);
+                }
+
+                println!(
+                    "  {:>2} | {:<22} | {:>6} | {:>8} | {} | {:>10.2} | {:>8.4} | {:>10.2} | {:>10.5} | {:>10.2} | {:>10.2}  ({:.1?}){}",
+                    i, name, result.fill_count, result.partial_fill_count,
+                    avg_fill_size, result.total_pnl, pnl_per_fill,
+                    dd, result.max_position, result.peak_notional,
+                    result.queue_volume_missed, elapsed, ratio_str,
+                );
+            }
+
+            println!("  {:-<130}", "");
+        }
     }
     println!();
 }
