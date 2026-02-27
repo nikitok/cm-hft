@@ -150,10 +150,13 @@ impl OrderBook {
 
     /// Returns the highest bid level, if any.
     pub fn best_bid(&self) -> Option<BookLevel> {
-        self.bids.iter().next().map(|(Reverse(price), qty)| BookLevel {
-            price: *price,
-            quantity: *qty,
-        })
+        self.bids
+            .iter()
+            .next()
+            .map(|(Reverse(price), qty)| BookLevel {
+                price: *price,
+                quantity: *qty,
+            })
     }
 
     /// Returns the lowest ask level, if any.
@@ -262,10 +265,7 @@ mod tests {
         OrderBook::new(Exchange::Binance, Symbol::new("BTCUSDT"))
     }
 
-    fn make_update(
-        bids: Vec<(Price, Quantity)>,
-        asks: Vec<(Price, Quantity)>,
-    ) -> BookUpdate {
+    fn make_update(bids: Vec<(Price, Quantity)>, asks: Vec<(Price, Quantity)>) -> BookUpdate {
         BookUpdate {
             exchange: Exchange::Binance,
             symbol: Symbol::new("BTCUSDT"),
@@ -347,10 +347,7 @@ mod tests {
         );
 
         // Remove the 49999.00 bid level by sending qty=0
-        let update = make_update(
-            vec![(Price::new(4999900, 2), Quantity::zero(8))],
-            vec![],
-        );
+        let update = make_update(vec![(Price::new(4999900, 2), Quantity::zero(8))], vec![]);
         book.apply_update(&update, 101).unwrap();
 
         assert_eq!(book.level_count(), (1, 1));
@@ -374,10 +371,7 @@ mod tests {
         book.apply_update(&update, 101).unwrap();
 
         assert_eq!(book.level_count(), (1, 1));
-        assert_eq!(
-            book.best_bid().unwrap().quantity,
-            Quantity::new(500000, 8)
-        );
+        assert_eq!(book.best_bid().unwrap().quantity, Quantity::new(500000, 8));
     }
 
     // -- 6. test_stale_update_rejected --
@@ -483,7 +477,10 @@ mod tests {
 
         let bps = book.spread_bps().unwrap();
         let expected = 1.0 / 50000.50 * 10_000.0;
-        assert!((bps - expected).abs() < 1e-6, "bps={bps}, expected={expected}");
+        assert!(
+            (bps - expected).abs() < 1e-6,
+            "bps={bps}, expected={expected}"
+        );
     }
 
     // -- 11. test_bid_depth --
@@ -696,10 +693,7 @@ mod tests {
         assert_eq!(book.level_count(), (3, 2));
 
         // Remove one bid
-        let update = make_update(
-            vec![(Price::new(4999800, 2), Quantity::zero(8))],
-            vec![],
-        );
+        let update = make_update(vec![(Price::new(4999800, 2), Quantity::zero(8))], vec![]);
         book.apply_update(&update, 101).unwrap();
         assert_eq!(book.level_count(), (2, 2));
 

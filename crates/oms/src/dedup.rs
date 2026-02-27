@@ -56,9 +56,7 @@ impl FillDeduplicator {
     /// Record a fill ID as processed.
     pub fn record_fill(&self, fill_id: String) {
         self.processed_fills.lock().insert(fill_id.clone());
-        self.fill_timestamps
-            .lock()
-            .push((fill_id, Instant::now()));
+        self.fill_timestamps.lock().push((fill_id, Instant::now()));
     }
 
     /// Remove entries older than `max_age` to bound memory usage.

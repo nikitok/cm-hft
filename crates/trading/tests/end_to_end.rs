@@ -39,12 +39,8 @@ async fn test_paper_trading_loop_end_to_end() {
     };
 
     // ── 2. Create PaperExecutor with raw fill channel ────────────
-    let (raw_fill_tx, raw_fill_rx) =
-        channel::unbounded::<cm_trading::paper_executor::RawFill>();
-    let executor = cm_trading::paper_executor::PaperExecutor::new(
-        paper_config,
-        raw_fill_tx,
-    );
+    let (raw_fill_tx, raw_fill_rx) = channel::unbounded::<cm_trading::paper_executor::RawFill>();
+    let executor = cm_trading::paper_executor::PaperExecutor::new(paper_config, raw_fill_tx);
 
     // Set up market data: book with bid=49900, ask=50100
     let mut book = OrderBook::new(Exchange::Binance, Symbol::new("BTCUSDT"));
@@ -125,7 +121,12 @@ async fn test_paper_trading_loop_end_to_end() {
 
     // Update OMS
     order_manager
-        .on_fill(resolved_order_id, raw_fill.price, raw_fill.quantity, is_full)
+        .on_fill(
+            resolved_order_id,
+            raw_fill.price,
+            raw_fill.quantity,
+            is_full,
+        )
         .unwrap();
 
     // Update PositionTracker
@@ -228,7 +229,10 @@ async fn test_paper_trading_loop_end_to_end() {
     assert!(raw_fill2.is_maker, "resting order should be maker fill");
 
     // Process the fill
-    let resolved_id2 = *order_id_map.get(&raw_fill2.client_order_id).unwrap().value();
+    let resolved_id2 = *order_id_map
+        .get(&raw_fill2.client_order_id)
+        .unwrap()
+        .value();
     order_manager
         .on_fill(resolved_id2, raw_fill2.price, raw_fill2.quantity, true)
         .unwrap();

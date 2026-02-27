@@ -248,7 +248,11 @@ mod tests {
             vpin.update(true, 500.0);
             vpin.update(false, 500.0);
         }
-        assert!(vpin.vpin() < 0.1, "balanced flow should give low VPIN: {}", vpin.vpin());
+        assert!(
+            vpin.vpin() < 0.1,
+            "balanced flow should give low VPIN: {}",
+            vpin.vpin()
+        );
     }
 
     #[test]
@@ -258,7 +262,11 @@ mod tests {
         for _ in 0..10 {
             vpin.update(true, 1000.0);
         }
-        assert!(vpin.vpin() > 0.9, "all-buy flow should give high VPIN: {}", vpin.vpin());
+        assert!(
+            vpin.vpin() > 0.9,
+            "all-buy flow should give high VPIN: {}",
+            vpin.vpin()
+        );
     }
 
     #[test]
@@ -275,7 +283,11 @@ mod tests {
         // Now 3 buckets (window=3), first was dropped
         assert_eq!(vpin.buckets.len(), 3);
         // Average should be (1.0 + 1.0 + 0.0) / 3 ≈ 0.667
-        assert!((vpin.vpin() - 2.0/3.0).abs() < 0.01, "vpin={}", vpin.vpin());
+        assert!(
+            (vpin.vpin() - 2.0 / 3.0).abs() < 0.01,
+            "vpin={}",
+            vpin.vpin()
+        );
     }
 
     #[test]
@@ -289,7 +301,11 @@ mod tests {
         let mut vpin = VpinTracker::new(100.0, 10);
         // Single trade larger than bucket size should fill multiple buckets
         vpin.update(true, 250.0);
-        assert_eq!(vpin.buckets.len(), 2, "250 notional with 100 bucket size = 2 complete buckets");
+        assert_eq!(
+            vpin.buckets.len(),
+            2,
+            "250 notional with 100 bucket size = 2 complete buckets"
+        );
         // Both buckets should be 1.0 (pure buy)
         assert!((vpin.vpin() - 1.0).abs() < 1e-10);
         // Current bucket should have 50 remaining

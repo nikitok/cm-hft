@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use cm_core::config::ExchangeConfig;
 use cm_core::types::*;
-use cm_market_data::binance::{BinanceMessage, BinanceWsClient, BinanceDepthSnapshot};
+use cm_market_data::binance::{BinanceDepthSnapshot, BinanceMessage, BinanceWsClient};
 use cm_market_data::bybit::{BybitConfig, BybitWsClient};
 use cm_market_data::orderbook::OrderBook;
 use cm_market_data::ws::ReconnectConfig as WsReconnectConfig;
@@ -72,13 +72,7 @@ pub async fn run_binance_feed(
             match client.fetch_snapshot(symbol).await {
                 Ok(snapshot) => {
                     let book_update = snapshot_to_book_update(&snapshot, symbol);
-                    apply_book_update(
-                        &mut books,
-                        &book_update,
-                        &md_tx,
-                        &state,
-                        &paper_executor,
-                    );
+                    apply_book_update(&mut books, &book_update, &md_tx, &state, &paper_executor);
                 }
                 Err(e) => {
                     tracing::error!(symbol = %symbol, error = %e, "Binance snapshot fetch failed");
@@ -93,13 +87,7 @@ pub async fn run_binance_feed(
             }
             match BinanceWsClient::read_message(&mut stream).await {
                 Ok(Some(BinanceMessage::Depth(book_update))) => {
-                    apply_book_update(
-                        &mut books,
-                        &book_update,
-                        &md_tx,
-                        &state,
-                        &paper_executor,
-                    );
+                    apply_book_update(&mut books, &book_update, &md_tx, &state, &paper_executor);
                 }
                 Ok(Some(BinanceMessage::Trade(trade))) => {
                     let _ = md_tx.send(MarketDataEvent::Trade(trade));

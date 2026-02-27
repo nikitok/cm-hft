@@ -122,7 +122,13 @@ impl fmt::Display for Quantity {
             let divisor = 10i64.pow(self.scale as u32);
             let whole = self.mantissa / divisor;
             let frac = (self.mantissa % divisor).abs();
-            write!(f, "{}.{:0>width$}", whole, frac, width = self.scale as usize)
+            write!(
+                f,
+                "{}.{:0>width$}",
+                whole,
+                frac,
+                width = self.scale as usize
+            )
         }
     }
 }
@@ -174,8 +180,8 @@ impl Add for Quantity {
 
     #[inline]
     fn add(self, rhs: Self) -> Self::Output {
-        let (a, b, scale) = Self::normalize(self, rhs)
-            .expect("Quantity::add overflow during scale normalization");
+        let (a, b, scale) =
+            Self::normalize(self, rhs).expect("Quantity::add overflow during scale normalization");
         Self {
             mantissa: a.checked_add(b).expect("Quantity::add overflow"),
             scale,
@@ -188,8 +194,8 @@ impl Sub for Quantity {
 
     #[inline]
     fn sub(self, rhs: Self) -> Self::Output {
-        let (a, b, scale) = Self::normalize(self, rhs)
-            .expect("Quantity::sub overflow during scale normalization");
+        let (a, b, scale) =
+            Self::normalize(self, rhs).expect("Quantity::sub overflow during scale normalization");
         Self {
             mantissa: a.checked_sub(b).expect("Quantity::sub overflow"),
             scale,
@@ -203,7 +209,10 @@ impl Mul<i64> for Quantity {
     #[inline]
     fn mul(self, rhs: i64) -> Self::Output {
         Self {
-            mantissa: self.mantissa.checked_mul(rhs).expect("Quantity::mul overflow"),
+            mantissa: self
+                .mantissa
+                .checked_mul(rhs)
+                .expect("Quantity::mul overflow"),
             scale: self.scale,
         }
     }

@@ -114,8 +114,7 @@ impl PositionTracker {
             pos.realized_pnl = pos.realized_pnl + Price::from(pnl);
 
             // Check if position flipped
-            if (old_net_f64 > 0.0 && new_net_f64 < 0.0)
-                || (old_net_f64 < 0.0 && new_net_f64 > 0.0)
+            if (old_net_f64 > 0.0 && new_net_f64 < 0.0) || (old_net_f64 < 0.0 && new_net_f64 > 0.0)
             {
                 // Position flipped: new entry price is the fill price
                 pos.avg_entry_price = fill_price;
@@ -147,12 +146,7 @@ impl PositionTracker {
     /// Calculate unrealized PnL (mark-to-market) for the given position.
     ///
     /// Uses `to_f64()` for Price * Quantity math (acceptable for PnL, not hot path).
-    pub fn unrealized_pnl(
-        &self,
-        exchange: &Exchange,
-        symbol: &Symbol,
-        mark_price: Price,
-    ) -> Price {
+    pub fn unrealized_pnl(&self, exchange: &Exchange, symbol: &Symbol, mark_price: Price) -> Price {
         match self.positions.get(&(*exchange, symbol.clone())) {
             Some(pos) => {
                 let net_f64 = pos.net_quantity.to_f64();
@@ -172,11 +166,7 @@ impl PositionTracker {
     /// Calculate worst-case position: net position + all pending order quantities.
     ///
     /// Returns the maximum absolute exposure considering all pending orders.
-    pub fn worst_case_position(
-        &self,
-        exchange: &Exchange,
-        symbol: &Symbol,
-    ) -> Quantity {
+    pub fn worst_case_position(&self, exchange: &Exchange, symbol: &Symbol) -> Quantity {
         let net = self.net_position(exchange, symbol);
         let mut buy_pending = Quantity::zero(net.scale());
         let mut sell_pending = Quantity::zero(net.scale());

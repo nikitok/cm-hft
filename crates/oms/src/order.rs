@@ -296,11 +296,7 @@ impl OrderManager {
     }
 
     /// Record a rejection. Transition: Sent -> Rejected.
-    pub fn on_reject(
-        &self,
-        order_id: OrderId,
-        reason: String,
-    ) -> Result<OrderEvent, OrderError> {
+    pub fn on_reject(&self, order_id: OrderId, reason: String) -> Result<OrderEvent, OrderError> {
         let r = reason;
         self.transition(order_id, OrderStatus::Rejected, |order| {
             Self::validate_transition(order.id, order.status, OrderStatus::Rejected)?;
@@ -376,11 +372,7 @@ impl OrderManager {
                 to = ?to,
                 "invalid order state transition"
             );
-            Err(OrderError::InvalidTransition {
-                order_id,
-                from,
-                to,
-            })
+            Err(OrderError::InvalidTransition { order_id, from, to })
         }
     }
 

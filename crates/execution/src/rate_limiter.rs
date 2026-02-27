@@ -183,7 +183,7 @@ mod tests {
     fn test_refill_over_time() {
         let rl = RateLimiter::new(100, 1000.0); // 1000 tokens/sec
         assert!(rl.try_acquire(100)); // drain all
-        // Sleep briefly to allow refill
+                                      // Sleep briefly to allow refill
         std::thread::sleep(Duration::from_millis(50));
         // Should have refilled ~50 tokens (1000/sec * 0.05s)
         let available = rl.available_tokens();
@@ -248,7 +248,7 @@ mod tests {
     fn test_acquire_blocking() {
         let rl = RateLimiter::new(10, 1000.0); // fast refill
         rl.try_acquire(10); // drain
-        // acquire should block briefly then succeed
+                            // acquire should block briefly then succeed
         rl.acquire(5);
         // If we got here, acquire succeeded
     }

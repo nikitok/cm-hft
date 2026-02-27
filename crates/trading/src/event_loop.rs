@@ -127,8 +127,7 @@ pub fn strategy_loop(
                     let _ = book.apply_update(&book_update, uid);
                 }
 
-                let mut ctx =
-                    TradingContext::new(positions, open_orders, book_update.timestamp);
+                let mut ctx = TradingContext::new(positions, open_orders, book_update.timestamp);
                 strategy.on_book_update(&mut ctx, book);
                 let actions = ctx.drain_actions();
                 if !actions.is_empty() {
@@ -214,10 +213,9 @@ pub async fn fill_processor(
             .unwrap_or(true);
 
         // Update OMS
-        if let Err(e) =
-            state
-                .order_manager
-                .on_fill(order_id, raw.price, raw.quantity, is_full)
+        if let Err(e) = state
+            .order_manager
+            .on_fill(order_id, raw.price, raw.quantity, is_full)
         {
             tracing::error!(order_id = %order_id, error = %e, "OMS on_fill failed");
         }
@@ -320,9 +318,7 @@ pub async fn action_processor(
                     let client_order_id = state.fill_dedup.next_client_order_id();
 
                     // Register mapping for fill resolution
-                    state
-                        .order_id_map
-                        .insert(client_order_id.clone(), order_id);
+                    state.order_id_map.insert(client_order_id.clone(), order_id);
 
                     // Create OMS order
                     let order = Order {
@@ -375,9 +371,7 @@ pub async fn action_processor(
                     }
 
                     // Add pending position
-                    state
-                        .position_tracker
-                        .add_pending(order_id, side, quantity);
+                    state.position_tracker.add_pending(order_id, side, quantity);
 
                     // Dispatch to executor
                     let new_order = NewOrder {
@@ -401,10 +395,7 @@ pub async fn action_processor(
                                     exchange_id = %ack.exchange_order_id,
                                     "order acknowledged"
                                 );
-                                let _ = om.on_ack(
-                                    order_id,
-                                    ExchangeOrderId(ack.exchange_order_id),
-                                );
+                                let _ = om.on_ack(order_id, ExchangeOrderId(ack.exchange_order_id));
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -451,10 +442,8 @@ pub async fn action_processor(
                 OrderAction::CancelAll { exchange, symbol } => {
                     let open_orders = state.order_manager.get_open_orders();
                     for order in open_orders {
-                        let matches_exchange =
-                            exchange.map_or(true, |e| order.exchange == e);
-                        let matches_symbol =
-                            symbol.as_ref().map_or(true, |s| order.symbol == *s);
+                        let matches_exchange = exchange.map_or(true, |e| order.exchange == e);
+                        let matches_symbol = symbol.as_ref().map_or(true, |s| order.symbol == *s);
 
                         if matches_exchange && matches_symbol {
                             if let Some(eid) = &order.exchange_order_id {

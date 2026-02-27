@@ -130,18 +130,23 @@ impl ReplayEngine {
         batch: &arrow::record_batch::RecordBatch,
         field_names: &[&str],
     ) -> Result<()> {
-        let ts_col = self.get_u64_column(batch, field_names, "timestamp_ns")
+        let ts_col = self
+            .get_u64_column(batch, field_names, "timestamp_ns")
             .or_else(|_| self.get_u64_column(batch, field_names, "timestamp"))?;
 
-        let bid1_col = self.get_f64_column(batch, field_names, "bid1")
+        let bid1_col = self
+            .get_f64_column(batch, field_names, "bid1")
             .or_else(|_| self.get_f64_column(batch, field_names, "bid_price"))?;
-        let ask1_col = self.get_f64_column(batch, field_names, "ask1")
+        let ask1_col = self
+            .get_f64_column(batch, field_names, "ask1")
             .or_else(|_| self.get_f64_column(batch, field_names, "ask_price"))?;
 
-        let bid1_qty_col = self.get_f64_column(batch, field_names, "bid1_qty")
+        let bid1_qty_col = self
+            .get_f64_column(batch, field_names, "bid1_qty")
             .or_else(|_| self.get_f64_column(batch, field_names, "bid_qty"))
             .ok();
-        let ask1_qty_col = self.get_f64_column(batch, field_names, "ask1_qty")
+        let ask1_qty_col = self
+            .get_f64_column(batch, field_names, "ask1_qty")
             .or_else(|_| self.get_f64_column(batch, field_names, "ask_qty"))
             .ok();
 
@@ -174,11 +179,13 @@ impl ReplayEngine {
         batch: &arrow::record_batch::RecordBatch,
         field_names: &[&str],
     ) -> Result<()> {
-        let ts_col = self.get_u64_column(batch, field_names, "timestamp_ns")
+        let ts_col = self
+            .get_u64_column(batch, field_names, "timestamp_ns")
             .or_else(|_| self.get_u64_column(batch, field_names, "timestamp"))?;
 
         let price_col = self.get_f64_column(batch, field_names, "price")?;
-        let qty_col = self.get_f64_column(batch, field_names, "quantity")
+        let qty_col = self
+            .get_f64_column(batch, field_names, "quantity")
             .or_else(|_| self.get_f64_column(batch, field_names, "qty"))?;
 
         let side_col = self.get_string_column(batch, field_names, "side").ok();

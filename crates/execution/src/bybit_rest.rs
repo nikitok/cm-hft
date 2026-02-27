@@ -203,11 +203,7 @@ impl BybitRestClient {
     /// Get open positions.
     ///
     /// GET `/v5/position/list`.
-    pub async fn get_positions(
-        &self,
-        category: &str,
-        symbol: &str,
-    ) -> Result<BybitPositionList> {
+    pub async fn get_positions(&self, category: &str, symbol: &str) -> Result<BybitPositionList> {
         let query = format!("category={}&symbol={}", category, symbol);
         self.sign_and_send_get("/v5/position/list", &query).await
     }
@@ -267,11 +263,7 @@ impl BybitRestClient {
             .with_context(|| format!("failed to deserialize Bybit {} response", path))?;
 
         if wrapper.ret_code != 0 {
-            bail!(
-                "Bybit API error {}: {}",
-                wrapper.ret_code,
-                wrapper.ret_msg
-            );
+            bail!("Bybit API error {}: {}", wrapper.ret_code, wrapper.ret_msg);
         }
 
         wrapper
@@ -324,11 +316,7 @@ impl BybitRestClient {
             .with_context(|| format!("failed to deserialize Bybit {} response", path))?;
 
         if wrapper.ret_code != 0 {
-            bail!(
-                "Bybit API error {}: {}",
-                wrapper.ret_code,
-                wrapper.ret_msg
-            );
+            bail!("Bybit API error {}: {}", wrapper.ret_code, wrapper.ret_msg);
         }
 
         wrapper
@@ -483,11 +471,8 @@ mod tests {
 
     #[test]
     fn test_client_construction() {
-        let client = BybitRestClient::new(
-            "https://api-testnet.bybit.com",
-            "test_key",
-            "test_secret",
-        );
+        let client =
+            BybitRestClient::new("https://api-testnet.bybit.com", "test_key", "test_secret");
         assert_eq!(client.base_url, "https://api-testnet.bybit.com");
         assert_eq!(client.api_key, "test_key");
         assert_eq!(client.recv_window, 5000);

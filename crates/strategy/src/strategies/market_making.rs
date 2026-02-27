@@ -68,12 +68,7 @@ impl MarketMakingStrategy {
     ///
     /// `net_position` is the current net position as f64 (positive = long).
     /// Returns `(bid_price, ask_price)` as f64.
-    fn calculate_quotes(
-        &self,
-        mid: f64,
-        level: usize,
-        net_position: f64,
-    ) -> (f64, f64) {
+    fn calculate_quotes(&self, mid: f64, level: usize, net_position: f64) -> (f64, f64) {
         let half_spread = mid * self.spread_bps / 10_000.0 / 2.0;
         let level_offset = half_spread * level as f64;
 
@@ -306,7 +301,10 @@ mod tests {
         strat.on_book_update(&mut ctx, &book);
 
         let actions = ctx.drain_actions();
-        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
         assert_eq!(submits.len(), 2);
 
         // Mid is ~50000.5
@@ -365,8 +363,14 @@ mod tests {
         let long_actions = ctx_long.drain_actions();
 
         // Filter to Submit actions only (skip CancelAll)
-        let flat_submits: Vec<_> = flat_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
-        let long_submits: Vec<_> = long_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let flat_submits: Vec<_> = flat_actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        let long_submits: Vec<_> = long_actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
 
         // Extract bid prices
         let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = flat_submits[0] {
@@ -556,8 +560,14 @@ mod tests {
         strat.on_book_update(&mut ctx_short, &book);
         let short_actions = ctx_short.drain_actions();
 
-        let flat_submits: Vec<_> = flat_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
-        let short_submits: Vec<_> = short_actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let flat_submits: Vec<_> = flat_actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        let short_submits: Vec<_> = short_actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
 
         let flat_bid = if let crate::context::OrderAction::Submit { price, .. } = flat_submits[0] {
             price.to_f64()
@@ -565,12 +575,12 @@ mod tests {
             panic!("expected Submit");
         };
 
-        let short_bid =
-            if let crate::context::OrderAction::Submit { price, .. } = short_submits[0] {
-                price.to_f64()
-            } else {
-                panic!("expected Submit");
-            };
+        let short_bid = if let crate::context::OrderAction::Submit { price, .. } = short_submits[0]
+        {
+            price.to_f64()
+        } else {
+            panic!("expected Submit");
+        };
 
         // When short, bid should be higher (more aggressive buying to reduce short)
         assert!(

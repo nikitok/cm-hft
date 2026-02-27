@@ -113,7 +113,11 @@ impl BinanceRestClient {
     /// Create a new Binance REST client.
     ///
     /// Uses connection pooling via `reqwest::Client` for efficient HTTP reuse.
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, api_secret: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        api_secret: impl Into<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             api_key: api_key.into(),
@@ -127,8 +131,8 @@ impl BinanceRestClient {
     ///
     /// POST `/api/v3/order` with signed query string.
     pub async fn place_order(&self, req: &BinanceOrderRequest) -> Result<BinanceOrderResponse> {
-        let query = serde_urlencoded::to_string(req)
-            .context("failed to serialize order request")?;
+        let query =
+            serde_urlencoded::to_string(req).context("failed to serialize order request")?;
         self.sign_and_send("POST", "/api/v3/order", &query, 1).await
     }
 
@@ -141,7 +145,8 @@ impl BinanceRestClient {
             "symbol={}&orderId={}&recvWindow=5000&timestamp={}",
             symbol, order_id, timestamp
         );
-        self.sign_and_send("DELETE", "/api/v3/order", &query, 1).await
+        self.sign_and_send("DELETE", "/api/v3/order", &query, 1)
+            .await
     }
 
     /// Get all open orders for a symbol.
@@ -149,11 +154,9 @@ impl BinanceRestClient {
     /// GET `/api/v3/openOrders`.
     pub async fn get_open_orders(&self, symbol: &str) -> Result<Vec<BinanceOrderResponse>> {
         let timestamp = chrono::Utc::now().timestamp_millis() as u64;
-        let query = format!(
-            "symbol={}&recvWindow=5000&timestamp={}",
-            symbol, timestamp
-        );
-        self.sign_and_send_vec("GET", "/api/v3/openOrders", &query, 3).await
+        let query = format!("symbol={}&recvWindow=5000&timestamp={}", symbol, timestamp);
+        self.sign_and_send_vec("GET", "/api/v3/openOrders", &query, 3)
+            .await
     }
 
     /// Get account information including balances.
@@ -171,7 +174,8 @@ impl BinanceRestClient {
 
         debug!(endpoint = "/api/v3/account", "Binance GET request");
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("X-MBX-APIKEY", &self.api_key)
             .send()
@@ -276,7 +280,8 @@ impl BinanceRestClient {
         query: &str,
         weight: u32,
     ) -> Result<Vec<T>> {
-        self.sign_and_send::<Vec<T>>(method, path, query, weight).await
+        self.sign_and_send::<Vec<T>>(method, path, query, weight)
+            .await
     }
 }
 
@@ -425,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_api_error_insufficient_balance() {
-        let json = r#"{"code": -2010, "msg": "Account has insufficient balance for requested action."}"#;
+        let json =
+            r#"{"code": -2010, "msg": "Account has insufficient balance for requested action."}"#;
         let err: BinanceApiError = serde_json::from_str(json).unwrap();
         assert_eq!(err.code, -2010);
         assert!(err.msg.contains("insufficient balance"));
@@ -433,11 +439,8 @@ mod tests {
 
     #[test]
     fn test_client_construction() {
-        let client = BinanceRestClient::new(
-            "https://testnet.binance.vision",
-            "test_key",
-            "test_secret",
-        );
+        let client =
+            BinanceRestClient::new("https://testnet.binance.vision", "test_key", "test_secret");
         assert_eq!(client.base_url, "https://testnet.binance.vision");
         assert_eq!(client.api_key, "test_key");
     }
@@ -453,6 +456,8 @@ mod tests {
         let signed = client.build_signed_query(query);
         assert!(signed.starts_with(query));
         assert!(signed.contains("&signature="));
-        assert!(signed.ends_with("c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71"));
+        assert!(
+            signed.ends_with("c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71")
+        );
     }
 }

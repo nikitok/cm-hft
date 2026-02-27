@@ -109,10 +109,7 @@ async fn metrics_handler(State(state): State<Arc<SharedState>>) -> String {
     ));
 
     for pos in &positions {
-        let labels = format!(
-            "exchange=\"{}\",symbol=\"{}\"",
-            pos.exchange, pos.symbol
-        );
+        let labels = format!("exchange=\"{}\",symbol=\"{}\"", pos.exchange, pos.symbol);
         out.push_str(&format!(
             "cm_position_net_qty{{{}}} {}\n",
             labels,

@@ -40,8 +40,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// cm_core::logging::init_tracing(false);
 /// ```
 pub fn init_tracing(json: bool) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let registry = tracing_subscriber::registry()
         .with(env_filter)

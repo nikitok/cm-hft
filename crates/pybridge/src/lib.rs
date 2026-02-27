@@ -133,17 +133,19 @@ pub fn run_backtest_inner(
 ) -> anyhow::Result<BacktestResult> {
     // Create strategy from registry
     let registry = default_registry();
-    let params: serde_json::Value = serde_json::from_str(&config.params)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let params: serde_json::Value =
+        serde_json::from_str(&config.params).unwrap_or_else(|_| serde_json::json!({}));
     let strategy_params = StrategyParams { params };
 
     let mut strategy = registry
         .create(&config.strategy_name, &strategy_params)
-        .ok_or_else(|| anyhow::anyhow!(
-            "unknown strategy '{}', available: {:?}",
-            config.strategy_name,
-            registry.available_strategies()
-        ))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown strategy '{}', available: {:?}",
+                config.strategy_name,
+                registry.available_strategies()
+            )
+        })?;
 
     // Create sim exchange
     let mut sim = SimExchange::new(
@@ -204,12 +206,8 @@ pub fn run_backtest_inner(
                     };
 
                     // Calculate PnL
-                    let fill_pnl = calculate_fill_pnl(
-                        net_position,
-                        avg_entry,
-                        fill_price,
-                        signed_qty,
-                    );
+                    let fill_pnl =
+                        calculate_fill_pnl(net_position, avg_entry, fill_price, signed_qty);
 
                     // Update position tracking
                     let (new_pos, new_avg) =
@@ -281,8 +279,7 @@ pub fn run_backtest_inner(
 
                 // Deliver fills to strategy
                 for fill in &fills {
-                    let mut fill_ctx =
-                        TradingContext::new(vec![], vec![], Timestamp(*ts));
+                    let mut fill_ctx = TradingContext::new(vec![], vec![], Timestamp(*ts));
                     strategy.on_fill(&mut fill_ctx, fill);
                 }
             }
@@ -293,7 +290,10 @@ pub fn run_backtest_inner(
         }
 
         // Calculate mark-to-market PnL
-        let mark_price = book.mid_price().map(|p| p.to_f64()).unwrap_or(initial_price);
+        let mark_price = book
+            .mid_price()
+            .map(|p| p.to_f64())
+            .unwrap_or(initial_price);
         let unrealized = net_position * (mark_price - avg_entry);
         let total_pnl = realized_pnl + unrealized;
 
@@ -329,7 +329,9 @@ fn generate_synthetic_events(
 
     for i in 0..num_events {
         // LCG: next = (a * state + c) mod m
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
 
         // Convert to roughly normal distribution using Box-Muller approximation
         // Simplified: use uniform [-1, 1] scaled by volatility
@@ -363,20 +365,15 @@ fn generate_synthetic_events(
 }
 
 /// Calculate realized PnL from a fill.
-fn calculate_fill_pnl(
-    net_position: f64,
-    avg_entry: f64,
-    fill_price: f64,
-    signed_qty: f64,
-) -> f64 {
+fn calculate_fill_pnl(net_position: f64, avg_entry: f64, fill_price: f64, signed_qty: f64) -> f64 {
     if net_position.abs() < 1e-12 {
         // Opening a new position, no PnL
         return 0.0;
     }
 
     // Check if this fill is reducing the position
-    let is_reducing = (net_position > 0.0 && signed_qty < 0.0)
-        || (net_position < 0.0 && signed_qty > 0.0);
+    let is_reducing =
+        (net_position > 0.0 && signed_qty < 0.0) || (net_position < 0.0 && signed_qty > 0.0);
 
     if !is_reducing {
         return 0.0;
@@ -407,8 +404,8 @@ fn update_position(
         return (new_position, fill_price);
     }
 
-    let same_direction = (net_position > 0.0 && signed_qty > 0.0)
-        || (net_position < 0.0 && signed_qty < 0.0);
+    let same_direction =
+        (net_position > 0.0 && signed_qty > 0.0) || (net_position < 0.0 && signed_qty < 0.0);
 
     if same_direction {
         // Adding to position: update VWAP

@@ -24,16 +24,16 @@ pub struct AdaptiveMarketMaker {
     reprice_threshold_bps: f64,
 
     // ── A-S parameters ──
-    risk_aversion: f64,   // γ — inventory penalty intensity
-    fill_intensity: f64,  // κ — expected order arrival rate
-    time_horizon: f64,    // τ — effective time horizon in ticks
+    risk_aversion: f64,  // γ — inventory penalty intensity
+    fill_intensity: f64, // κ — expected order arrival rate
+    time_horizon: f64,   // τ — effective time horizon in ticks
 
     // ── VPIN parameters ──
-    vpin_factor: f64,     // spread multiplier: 1 + vpin_factor * vpin
+    vpin_factor: f64, // spread multiplier: 1 + vpin_factor * vpin
 
     // ── Asymmetric sizing parameters ──
-    size_decay_power: f64,  // how fast accumulating side shrinks
-    reduce_boost: f64,      // max increase for reducing side
+    size_decay_power: f64, // how fast accumulating side shrinks
+    reduce_boost: f64,     // max increase for reducing side
 
     // ── Signal state ──
     vol_tracker: VolatilityTracker,
@@ -166,7 +166,6 @@ impl AdaptiveMarketMaker {
         }
         (bid_vol - ask_vol) / total
     }
-
 }
 
 impl Strategy for AdaptiveMarketMaker {
@@ -239,8 +238,8 @@ impl Strategy for AdaptiveMarketMaker {
             // A-S optimal spread in bps:
             //   spread_bps = γ·σ²·τ + (2/γ)·ln(1 + γ/κ)
             // With σ_bps=2, γ=0.3, τ=1: spread = 0.3*4*1 + 6.67*0.18 ≈ 2.4 bps
-            let spread_bps = gamma * sigma_bps_sq * tau
-                + (2.0 / gamma) * (1.0 + gamma / kappa).ln();
+            let spread_bps =
+                gamma * sigma_bps_sq * tau + (2.0 / gamma) * (1.0 + gamma / kappa).ln();
 
             // Convert bps → dollars.
             let as_spread = mid * spread_bps / 10_000.0;
@@ -508,7 +507,10 @@ mod tests {
         let mut ctx = make_context_with_position(0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
-        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
 
         // With r=1.0: accum_size = 0.001 * (1-1)^2 = 0 → bid skipped (hard cap also blocks)
         // reduce_size = 0.001 * (1 + 1*0.5) = 0.0015 → ask submitted
@@ -537,7 +539,10 @@ mod tests {
         let mut ctx = make_context_with_position(-0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
-        let submits: Vec<_> = actions.iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
 
         // With r=1.0: accum_size = 0 → ask skipped (hard cap also blocks), reduce_size = 0.0015 → bid submitted
         assert_eq!(submits.len(), 1, "at max short, only bid should be quoted");
@@ -565,10 +570,17 @@ mod tests {
         let mut ctx = make_context_with_position(0.01);
         strat.on_book_update(&mut ctx, &book);
         let actions = ctx.drain_actions();
-        let submits: Vec<_> = actions.into_iter().filter(|a| matches!(a, crate::context::OrderAction::Submit { .. })).collect();
+        let submits: Vec<_> = actions
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
 
         // Both sides should be quoted (accum_size > 1e-8)
-        assert_eq!(submits.len(), 2, "partial inventory should quote both sides");
+        assert_eq!(
+            submits.len(),
+            2,
+            "partial inventory should quote both sides"
+        );
 
         let bid_qty = match &submits[0] {
             crate::context::OrderAction::Submit { quantity, .. } => quantity.to_f64(),
@@ -580,7 +592,10 @@ mod tests {
         };
 
         // When long: bid = accum (smaller), ask = reduce (larger)
-        assert!(bid_qty < ask_qty, "when long, bid size ({bid_qty}) should be < ask size ({ask_qty})");
+        assert!(
+            bid_qty < ask_qty,
+            "when long, bid size ({bid_qty}) should be < ask size ({ask_qty})"
+        );
     }
 
     #[test]
@@ -627,7 +642,10 @@ mod tests {
             _ => panic!("expected Submit"),
         };
         // When long, reservation_price < mid, so ask = reservation_price + half → lower
-        assert!(long_ask < flat_ask, "long ask {long_ask} should be < flat ask {flat_ask}");
+        assert!(
+            long_ask < flat_ask,
+            "long ask {long_ask} should be < flat ask {flat_ask}"
+        );
     }
 
     #[test]
@@ -782,17 +800,32 @@ mod tests {
         let actions_vp = ctx_vp.drain_actions();
 
         // Extract ask prices
-        let ask_no = actions_no.iter().find_map(|a| match a {
-            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => Some(price.to_f64()),
-            _ => None,
-        }).expect("no ask from no-vpin strat");
+        let ask_no = actions_no
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no ask from no-vpin strat");
 
-        let ask_vp = actions_vp.iter().find_map(|a| match a {
-            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => Some(price.to_f64()),
-            _ => None,
-        }).expect("no ask from with-vpin strat");
+        let ask_vp = actions_vp
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no ask from with-vpin strat");
 
         eprintln!("Ask no_vpin: {:.4}, ask with_vpin: {:.4}", ask_no, ask_vp);
-        assert!(ask_vp > ask_no, "VPIN should widen spread: vpin ask {} should be > no-vpin ask {}", ask_vp, ask_no);
+        assert!(
+            ask_vp > ask_no,
+            "VPIN should widen spread: vpin ask {} should be > no-vpin ask {}",
+            ask_vp,
+            ask_no
+        );
     }
 }

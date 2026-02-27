@@ -123,7 +123,13 @@ impl fmt::Display for Price {
             let divisor = 10i64.pow(self.scale as u32);
             let whole = self.mantissa / divisor;
             let frac = (self.mantissa % divisor).abs();
-            write!(f, "{}.{:0>width$}", whole, frac, width = self.scale as usize)
+            write!(
+                f,
+                "{}.{:0>width$}",
+                whole,
+                frac,
+                width = self.scale as usize
+            )
         }
     }
 }
@@ -178,7 +184,8 @@ impl Add for Price {
     /// Add two prices. Panics on overflow in debug builds.
     #[inline]
     fn add(self, rhs: Self) -> Self::Output {
-        let (a, b, scale) = Self::normalize(self, rhs).expect("Price::add overflow during scale normalization");
+        let (a, b, scale) =
+            Self::normalize(self, rhs).expect("Price::add overflow during scale normalization");
         Self {
             mantissa: a.checked_add(b).expect("Price::add overflow"),
             scale,
@@ -192,7 +199,8 @@ impl Sub for Price {
     /// Subtract two prices. Panics on overflow in debug builds.
     #[inline]
     fn sub(self, rhs: Self) -> Self::Output {
-        let (a, b, scale) = Self::normalize(self, rhs).expect("Price::sub overflow during scale normalization");
+        let (a, b, scale) =
+            Self::normalize(self, rhs).expect("Price::sub overflow during scale normalization");
         Self {
             mantissa: a.checked_sub(b).expect("Price::sub overflow"),
             scale,
@@ -339,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_add_different_scale() {
-        let a = Price::new(10, 1);  // 1.0
+        let a = Price::new(10, 1); // 1.0
         let b = Price::new(250, 2); // 2.50
         let c = a + b;
         assert_eq!(c.mantissa(), 350); // 3.50
@@ -357,7 +365,7 @@ mod tests {
     #[test]
     fn test_sub_different_scale() {
         let a = Price::new(350, 2); // 3.50
-        let b = Price::new(10, 1);  // 1.0
+        let b = Price::new(10, 1); // 1.0
         let c = a - b;
         assert_eq!(c.mantissa(), 250); // 2.50
         assert_eq!(c.scale(), 2);
@@ -480,9 +488,9 @@ mod tests {
     #[test]
     fn test_cross_scale_arithmetic_chain() {
         // (1.0 + 0.50) - 0.250 = 1.250
-        let a = Price::new(10, 1);    // 1.0
-        let b = Price::new(50, 2);    // 0.50
-        let c = Price::new(250, 3);   // 0.250
+        let a = Price::new(10, 1); // 1.0
+        let b = Price::new(50, 2); // 0.50
+        let c = Price::new(250, 3); // 0.250
         let result = (a + b) - c;
         assert_eq!(result, Price::new(1250, 3));
     }

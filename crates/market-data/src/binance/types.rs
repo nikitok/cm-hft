@@ -193,8 +193,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_trade() {
-        let trade: BinanceTrade =
-            serde_json::from_str(TRADE_JSON).expect("deserialize trade");
+        let trade: BinanceTrade = serde_json::from_str(TRADE_JSON).expect("deserialize trade");
 
         assert_eq!(trade.event_type, "trade");
         assert_eq!(trade.event_time, 1706000000000);
@@ -220,8 +219,7 @@ mod tests {
 
     #[test]
     fn test_depth_update_to_book_update() {
-        let raw: BinanceDepthUpdate =
-            serde_json::from_str(DEPTH_UPDATE_JSON).expect("deserialize");
+        let raw: BinanceDepthUpdate = serde_json::from_str(DEPTH_UPDATE_JSON).expect("deserialize");
         let book: BookUpdate = raw.into();
 
         assert_eq!(book.exchange, Exchange::Binance);
@@ -244,8 +242,7 @@ mod tests {
 
     #[test]
     fn test_trade_to_normalized_trade() {
-        let raw: BinanceTrade =
-            serde_json::from_str(TRADE_JSON).expect("deserialize");
+        let raw: BinanceTrade = serde_json::from_str(TRADE_JSON).expect("deserialize");
         let trade: Trade = raw.into();
 
         assert_eq!(trade.exchange, Exchange::Binance);

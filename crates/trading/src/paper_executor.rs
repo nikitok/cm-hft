@@ -200,16 +200,8 @@ impl ExchangeGateway for PaperExecutor {
 
         if immediate_fill {
             let fill_price = match order.side {
-                Side::Buy => self
-                    .best_ask
-                    .lock()
-                    .map(|(p, _)| p)
-                    .unwrap_or(order.price),
-                Side::Sell => self
-                    .best_bid
-                    .lock()
-                    .map(|(p, _)| p)
-                    .unwrap_or(order.price),
+                Side::Buy => self.best_ask.lock().map(|(p, _)| p).unwrap_or(order.price),
+                Side::Sell => self.best_bid.lock().map(|(p, _)| p).unwrap_or(order.price),
             };
 
             let _ = self.fill_tx.send(RawFill {

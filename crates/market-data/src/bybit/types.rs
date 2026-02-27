@@ -89,7 +89,11 @@ impl From<&BybitTrade> for Trade {
     fn from(bt: &BybitTrade) -> Self {
         let price: f64 = bt.p.parse().unwrap_or(0.0);
         let quantity: f64 = bt.v.parse().unwrap_or(0.0);
-        let side = if bt.side == "Buy" { Side::Buy } else { Side::Sell };
+        let side = if bt.side == "Buy" {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
 
         Trade {
             exchange: Exchange::Bybit,

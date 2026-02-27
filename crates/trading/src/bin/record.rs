@@ -83,11 +83,7 @@ fn base_filename(symbol: &str, duration_label: &str, timestamp: bool) -> String 
             now.format("%Y-%m-%d_%H:%M")
         )
     } else {
-        format!(
-            "bybit_{}_{}",
-            symbol.to_lowercase(),
-            duration_label
-        )
+        format!("bybit_{}_{}", symbol.to_lowercase(), duration_label)
     }
 }
 
@@ -140,7 +136,14 @@ async fn main() -> Result<()> {
 
         let file = std::fs::File::create(&jsonl_path)?;
         let writer = BufWriter::new(file);
-        writers.insert(symbol.clone(), SymWriter { writer, jsonl_path: jsonl_path.clone(), gz_path });
+        writers.insert(
+            symbol.clone(),
+            SymWriter {
+                writer,
+                jsonl_path: jsonl_path.clone(),
+                gz_path,
+            },
+        );
         tracing::info!(path = %jsonl_path.display(), "writing to plain JSONL (will compress on clean shutdown)");
     }
 
@@ -157,10 +160,7 @@ async fn main() -> Result<()> {
     let (trade_tx, mut trade_rx) = mpsc::channel::<Trade>(4096);
 
     // Spawn Bybit WS client.
-    let client = BybitWsClient::new(
-        BybitConfig::default(),
-        args.symbols.clone(),
-    );
+    let client = BybitWsClient::new(BybitConfig::default(), args.symbols.clone());
     let ws_handle = tokio::spawn(async move {
         if let Err(e) = client.run(book_tx, trade_tx).await {
             tracing::error!(error = %e, "Bybit WS client error");
@@ -179,10 +179,8 @@ async fn main() -> Result<()> {
     // SIGTERM handler for graceful shutdown in K8s.
     let shutdown_sigterm = shutdown.clone();
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         sigterm.recv().await;
         tracing::info!("SIGTERM received, shutting down...");
         shutdown_sigterm.cancel();
@@ -269,7 +267,10 @@ async fn main() -> Result<()> {
 
     // Flush, compress, and close all writers.
     for (sym, mut sw) in writers {
-        let count = counters.get(&sym).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0);
+        let count = counters
+            .get(&sym)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0);
 
         // Flush the BufWriter.
         sw.writer.flush()?;
@@ -285,7 +286,10 @@ async fn main() -> Result<()> {
 
     // Print summary.
     for sym in &args.symbols {
-        let count = counters.get(sym).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0);
+        let count = counters
+            .get(sym)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0);
         tracing::info!(symbol = %sym, total_events = count, "recording complete");
     }
 

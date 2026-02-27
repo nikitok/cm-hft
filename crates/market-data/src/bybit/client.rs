@@ -259,8 +259,8 @@ impl WsHandler for BybitHandler {
     async fn on_message(&mut self, msg: Message) -> Result<()> {
         match msg {
             Message::Text(text) => {
-                let resp: BybitWsResponse = serde_json::from_str(&text)
-                    .context("failed to parse Bybit WS response")?;
+                let resp: BybitWsResponse =
+                    serde_json::from_str(&text).context("failed to parse Bybit WS response")?;
 
                 // Handle subscription confirmations.
                 if resp.op.as_deref() == Some("subscribe") {
@@ -316,9 +316,7 @@ impl WsHandler for BybitHandler {
 ///
 /// Returns a [`tokio::task::JoinHandle`] that can be used to abort the task
 /// when the connection is torn down.
-pub fn spawn_ping_task(
-    sink: tokio::sync::mpsc::Sender<String>,
-) -> tokio::task::JoinHandle<()> {
+pub fn spawn_ping_task(sink: tokio::sync::mpsc::Sender<String>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(PING_INTERVAL);
         loop {
@@ -390,10 +388,12 @@ mod tests {
         let mut tracker: HashMap<String, SymbolSeqState> = HashMap::new();
 
         // First snapshot initializes.
-        let state = tracker.entry("BTCUSDT".to_string()).or_insert(SymbolSeqState {
-            last_seq: 0,
-            initialized: false,
-        });
+        let state = tracker
+            .entry("BTCUSDT".to_string())
+            .or_insert(SymbolSeqState {
+                last_seq: 0,
+                initialized: false,
+            });
         state.last_seq = 100;
         state.initialized = true;
 

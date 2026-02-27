@@ -126,12 +126,7 @@ impl QuestDbClient {
 
         let mut line = String::with_capacity(2048);
         // measurement,tag=val,tag=val
-        write!(
-            line,
-            "book_update,exchange={},symbol={}",
-            exchange, symbol,
-        )
-        .unwrap();
+        write!(line, "book_update,exchange={},symbol={}", exchange, symbol,).unwrap();
 
         // Fields — space before first field
         line.push(' ');
@@ -239,10 +234,7 @@ impl QuestDbClient {
             return Ok(0);
         }
 
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or(QuestDbError::NotConnected)?;
+        let stream = self.stream.as_mut().ok_or(QuestDbError::NotConnected)?;
 
         let len = self.buffer.len();
         stream
@@ -509,20 +501,10 @@ mod tests {
             symbol: Symbol::new("BTCUSDT"),
             timestamp: Timestamp::from_millis(1706000000000),
             bids: (0..25)
-                .map(|i| {
-                    (
-                        Price::new(5000000 - i * 100, 2),
-                        Quantity::new(10000000, 8),
-                    )
-                })
+                .map(|i| (Price::new(5000000 - i * 100, 2), Quantity::new(10000000, 8)))
                 .collect(),
             asks: (0..25)
-                .map(|i| {
-                    (
-                        Price::new(5000100 + i * 100, 2),
-                        Quantity::new(10000000, 8),
-                    )
-                })
+                .map(|i| (Price::new(5000100 + i * 100, 2), Quantity::new(10000000, 8)))
                 .collect(),
             is_snapshot: true,
         };

@@ -19,8 +19,8 @@ use cm_execution::gateway::ExchangeGateway;
 use cm_market_data::ws::ReconnectConfig as WsReconnectConfig;
 use cm_oms::{FillDeduplicator, OrderManager, PositionTracker};
 use cm_risk::{
-    CircuitBreaker, DrawdownCheck, FatFingerCheck, MaxOrderSizeCheck,
-    MaxPositionCheck, OrderRateLimitCheck, RiskPipeline,
+    CircuitBreaker, DrawdownCheck, FatFingerCheck, MaxOrderSizeCheck, MaxPositionCheck,
+    OrderRateLimitCheck, RiskPipeline,
 };
 use cm_strategy::traits::Fill;
 use cm_strategy::{default_registry, StrategyParams};
@@ -61,11 +61,9 @@ impl SharedState {
             total += pos.realized_pnl.to_f64();
             if let Some(mid_entry) = self.mid_prices.get(&(pos.exchange, pos.symbol.clone())) {
                 let mid = *mid_entry.value();
-                let unrealized = self.position_tracker.unrealized_pnl(
-                    &pos.exchange,
-                    &pos.symbol,
-                    mid,
-                );
+                let unrealized =
+                    self.position_tracker
+                        .unrealized_pnl(&pos.exchange, &pos.symbol, mid);
                 total += unrealized.to_f64();
             }
         }
@@ -85,9 +83,7 @@ impl TradingEngine {
         let circuit_breaker = Arc::new(CircuitBreaker::new());
         let position_tracker = Arc::new(PositionTracker::new());
         let order_manager = Arc::new(OrderManager::new());
-        let fill_dedup = Arc::new(FillDeduplicator::new(
-            format!("{}", std::process::id()),
-        ));
+        let fill_dedup = Arc::new(FillDeduplicator::new(format!("{}", std::process::id())));
 
         // Build risk pipeline from config
         let mut pipeline = RiskPipeline::new();
@@ -151,7 +147,8 @@ impl TradingEngine {
 
         // ── Channels ─────────────────────────────────────────────
         let (md_tx, md_rx) = crossbeam::channel::bounded::<event_loop::MarketDataEvent>(4096);
-        let (action_tx, action_rx) = crossbeam::channel::bounded::<Vec<cm_strategy::OrderAction>>(1024);
+        let (action_tx, action_rx) =
+            crossbeam::channel::bounded::<Vec<cm_strategy::OrderAction>>(1024);
         // Raw fills from executor → fill processor
         let (raw_fill_tx, raw_fill_rx) = crossbeam::channel::unbounded::<RawFill>();
         // Resolved fills from fill processor → strategy thread
@@ -192,15 +189,13 @@ impl TradingEngine {
         let params = StrategyParams {
             params: serde_json::json!({}),
         };
-        let strategy = registry
-            .create(strategy_name, &params)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown strategy '{}'; available: {:?}",
-                    strategy_name,
-                    registry.available_strategies()
-                )
-            })?;
+        let strategy = registry.create(strategy_name, &params).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown strategy '{}'; available: {:?}",
+                strategy_name,
+                registry.available_strategies()
+            )
+        })?;
 
         tracing::info!(
             mode = ?config.trading.mode,
@@ -222,9 +217,7 @@ impl TradingEngine {
 
         // ── 2. Market data feeds ─────────────────────────────────
         let ws_reconnect = WsReconnectConfig {
-            initial_backoff: Duration::from_millis(
-                config.market_data.reconnect.initial_backoff_ms,
-            ),
+            initial_backoff: Duration::from_millis(config.market_data.reconnect.initial_backoff_ms),
             max_backoff: Duration::from_millis(config.market_data.reconnect.max_backoff_ms),
             max_retries: config.market_data.reconnect.max_retries,
             alert_after: 5,
@@ -301,31 +294,26 @@ impl TradingEngine {
         // ── 5. Strategy thread (dedicated OS thread) ─────────────
         let strat_state = state.clone();
         let strat_cancel = cancel.clone();
-        let strat_handle = std::thread::Builder::new()
-            .name("strategy".into())
-            .spawn(move || {
-                event_loop::strategy_loop(
-                    strategy,
-                    strat_state,
-                    md_rx,
-                    action_tx,
-                    fill_rx,
-                    strat_cancel,
-                );
-            })?;
+        let strat_handle =
+            std::thread::Builder::new()
+                .name("strategy".into())
+                .spawn(move || {
+                    event_loop::strategy_loop(
+                        strategy,
+                        strat_state,
+                        md_rx,
+                        action_tx,
+                        fill_rx,
+                        strat_cancel,
+                    );
+                })?;
 
         // ── 6. Action processor (tokio task) ─────────────────────
         let proc_state = state.clone();
         let proc_executor = executor.clone();
         let proc_cancel = cancel.clone();
         tokio::spawn(async move {
-            event_loop::action_processor(
-                proc_state,
-                proc_executor,
-                action_rx,
-                proc_cancel,
-            )
-            .await;
+            event_loop::action_processor(proc_state, proc_executor, action_rx, proc_cancel).await;
         });
 
         // ── Shutdown signal ──────────────────────────────────────

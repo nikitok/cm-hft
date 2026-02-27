@@ -71,10 +71,7 @@ impl BinanceWsClient {
             .iter()
             .flat_map(|s| {
                 let lower = s.to_lowercase();
-                vec![
-                    format!("{lower}@depth@100ms"),
-                    format!("{lower}@trade"),
-                ]
+                vec![format!("{lower}@depth@100ms"), format!("{lower}@trade")]
             })
             .collect();
 
@@ -147,9 +144,7 @@ impl BinanceWsClient {
     /// confirmations) and `Some(BinanceMessage)` for depth or trade data.
     ///
     /// Logs wire-to-parsed latency on every successfully parsed message.
-    pub async fn read_message(
-        stream: &mut BinanceWsStream,
-    ) -> Result<Option<BinanceMessage>> {
+    pub async fn read_message(stream: &mut BinanceWsStream) -> Result<Option<BinanceMessage>> {
         loop {
             let msg = stream
                 .next()
@@ -242,10 +237,7 @@ impl BinanceWsClient {
             .iter()
             .flat_map(|s| {
                 let lower = s.to_lowercase();
-                vec![
-                    format!("{lower}@depth@100ms"),
-                    format!("{lower}@trade"),
-                ]
+                vec![format!("{lower}@depth@100ms"), format!("{lower}@trade")]
             })
             .collect();
 

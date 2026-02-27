@@ -92,7 +92,8 @@ impl TradingContext {
 
     /// Buffer a cancel-all request, optionally filtered by exchange and/or symbol.
     pub fn cancel_all(&mut self, exchange: Option<Exchange>, symbol: Option<Symbol>) {
-        self.actions.push(OrderAction::CancelAll { exchange, symbol });
+        self.actions
+            .push(OrderAction::CancelAll { exchange, symbol });
     }
 
     /// Look up a position by exchange and symbol.

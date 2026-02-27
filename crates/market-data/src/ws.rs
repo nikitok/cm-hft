@@ -218,11 +218,7 @@ impl WsConnection {
 ///
 /// `backoff = initial * 2^attempt`, capped at `max`. Jitter adds a random
 /// amount in `[0, 0.5 * backoff]`.
-pub(crate) fn calculate_backoff(
-    initial: &Duration,
-    max: &Duration,
-    attempt: u32,
-) -> Duration {
+pub(crate) fn calculate_backoff(initial: &Duration, max: &Duration, attempt: u32) -> Duration {
     let base = initial
         .saturating_mul(2u32.saturating_pow(attempt))
         .min(*max);
@@ -256,10 +252,15 @@ mod tests {
         // Since jitter is random, we test that the result is within expected bounds.
         for attempt in 0..10 {
             let backoff = calculate_backoff(&initial, &max, attempt);
-            let expected_base = initial.saturating_mul(2u32.saturating_pow(attempt)).min(max);
+            let expected_base = initial
+                .saturating_mul(2u32.saturating_pow(attempt))
+                .min(max);
 
             // Backoff must be >= base (jitter is non-negative).
-            assert!(backoff >= expected_base, "attempt {attempt}: backoff < base");
+            assert!(
+                backoff >= expected_base,
+                "attempt {attempt}: backoff < base"
+            );
             // Backoff must be <= base * 1.5 (jitter is at most 50%).
             let upper = expected_base + Duration::from_secs_f64(expected_base.as_secs_f64() * 0.5);
             assert!(
@@ -298,7 +299,10 @@ mod tests {
         // At attempt 20, the raw value would be huge; it must be capped.
         let backoff = calculate_backoff(&initial, &max, 20);
         let upper = max + Duration::from_secs_f64(max.as_secs_f64() * 0.5);
-        assert!(backoff <= upper, "backoff {backoff:?} exceeds capped upper bound {upper:?}");
+        assert!(
+            backoff <= upper,
+            "backoff {backoff:?} exceeds capped upper bound {upper:?}"
+        );
         assert!(backoff >= max, "backoff {backoff:?} below max {max:?}");
     }
 
@@ -319,13 +323,22 @@ mod tests {
     #[test]
     fn test_connection_state_equality() {
         assert_eq!(ConnectionState::Connected, ConnectionState::Connected);
-        assert_ne!(ConnectionState::Connected, ConnectionState::Failed {
-            reason: "test".to_string(),
-        });
+        assert_ne!(
+            ConnectionState::Connected,
+            ConnectionState::Failed {
+                reason: "test".to_string(),
+            }
+        );
 
-        let d1 = ConnectionState::Disconnected { reason: "a".to_string() };
-        let d2 = ConnectionState::Disconnected { reason: "a".to_string() };
-        let d3 = ConnectionState::Disconnected { reason: "b".to_string() };
+        let d1 = ConnectionState::Disconnected {
+            reason: "a".to_string(),
+        };
+        let d2 = ConnectionState::Disconnected {
+            reason: "a".to_string(),
+        };
+        let d3 = ConnectionState::Disconnected {
+            reason: "b".to_string(),
+        };
         assert_eq!(d1, d2);
         assert_ne!(d1, d3);
 

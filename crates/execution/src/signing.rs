@@ -131,6 +131,8 @@ mod tests {
     #[test]
     fn test_signature_is_lowercase_hex() {
         let sig = sign_binance_request("key", "data");
-        assert!(sig.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(sig
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 }

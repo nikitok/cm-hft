@@ -43,7 +43,8 @@ fn test_mm_strategy_btc_30m() {
     let events = load_events(&path).expect("failed to load events");
     assert!(!events.is_empty(), "data file should not be empty");
 
-    let mut harness = ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
+    let mut harness =
+        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
     let result = harness.run(&events);
 
     // Strategy generates orders on real data.
@@ -77,7 +78,8 @@ fn test_mm_strategy_eth_30m() {
     let events = load_events(&path).expect("failed to load events");
     assert!(!events.is_empty(), "data file should not be empty");
 
-    let mut harness = ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "ETHUSDT");
+    let mut harness =
+        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "ETHUSDT");
     let result = harness.run(&events);
 
     assert!(result.order_count > 0, "strategy should generate orders");
@@ -119,7 +121,10 @@ fn test_mm_different_params() {
     let result = harness.run(&events);
 
     // Should still produce orders without panicking.
-    assert!(result.order_count > 0, "wider params should still generate orders");
+    assert!(
+        result.order_count > 0,
+        "wider params should still generate orders"
+    );
 }
 
 #[test]
@@ -135,7 +140,12 @@ fn test_no_panics_on_real_data() {
     let events = load_events(&path).expect("failed to load events");
 
     // Just verify strategy doesn't crash on 30 min of real data.
-    let mut harness = ReplayTestHarness::new("market_making", default_params(), Exchange::Bybit, "BTCUSDT");
+    let mut harness = ReplayTestHarness::new(
+        "market_making",
+        default_params(),
+        Exchange::Bybit,
+        "BTCUSDT",
+    );
     let _result = harness.run(&events);
     // If we get here without panicking, the test passes.
 }
@@ -228,7 +238,8 @@ fn test_pnl_series_monotonic_events() {
 
     let events = load_events(&path).expect("failed to load events");
 
-    let mut harness = ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
+    let mut harness =
+        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
     let result = harness.run(&events);
 
     // PnL series should have one entry per book update event.

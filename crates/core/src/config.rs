@@ -259,7 +259,10 @@ impl AppConfig {
             .set_default("binance.api_secret", "")?
             // Bybit testnet
             .set_default("bybit.testnet", true)?
-            .set_default("bybit.ws_url", "wss://stream-testnet.bybit.com/v5/public/spot")?
+            .set_default(
+                "bybit.ws_url",
+                "wss://stream-testnet.bybit.com/v5/public/spot",
+            )?
             .set_default("bybit.rest_url", "https://api-testnet.bybit.com")?
             .set_default("bybit.timeout_ms", 5000i64)?
             .set_default("bybit.api_key", "")?
@@ -291,9 +294,7 @@ impl AppConfig {
 
         // ── Layer 2: TOML file ─────────────────────────────────────
         if let Some(path) = config_path {
-            let path_str = path
-                .to_str()
-                .context("config path is not valid UTF-8")?;
+            let path_str = path.to_str().context("config path is not valid UTF-8")?;
             builder = builder.add_source(File::with_name(path_str).required(true));
         }
 

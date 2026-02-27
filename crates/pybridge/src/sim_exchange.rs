@@ -498,7 +498,10 @@ mod tests {
         exchange.on_book_update(&book);
 
         let fills = exchange.drain_fills();
-        assert!(fills.is_empty(), "order should not fill before latency window");
+        assert!(
+            fills.is_empty(),
+            "order should not fill before latency window"
+        );
 
         // Book update at time 1_000_000 (1ms) -- order now active
         exchange.set_time(1_000_000);

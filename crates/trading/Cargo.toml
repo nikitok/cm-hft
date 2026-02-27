@@ -43,6 +43,7 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 crossbeam = { workspace = true }
 dashmap = "6"
 flate2 = "1"
+regex = "1"
 cm-strategy = { path = "../strategy" }
 cm-market-data = { path = "../market-data" }
 cm-oms = { path = "../oms" }
