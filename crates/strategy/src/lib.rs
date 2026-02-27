@@ -190,7 +190,7 @@ mod tests {
         let params = StrategyParams {
             params: serde_json::json!({ "enabled": true }),
         };
-        assert_eq!(params.get_bool("enabled").unwrap(), true);
+        assert!(params.get_bool("enabled").unwrap());
     }
 
     #[test]

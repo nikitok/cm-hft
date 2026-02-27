@@ -180,9 +180,7 @@ impl Visit for SecretCheckVisitor {
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        if SENSITIVE_FIELD_NAMES.contains(&field.name()) {
-            self.found_secret = true;
-        } else if Self::looks_like_secret(value) {
+        if SENSITIVE_FIELD_NAMES.contains(&field.name()) || Self::looks_like_secret(value) {
             self.found_secret = true;
         }
     }

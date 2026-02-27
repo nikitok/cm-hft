@@ -383,7 +383,6 @@ mod tests {
             batch_size: 2,
             channel_capacity: 10,
             flush_interval_ms: 10000, // Very long so timer won't fire.
-            ..Default::default()
         };
         let (mut recorder, handle) = Recorder::new(config);
 

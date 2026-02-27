@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::useless_format)]
 //! Replay test harness for running strategies against recorded market data.
 //!
 //! Loads JSONL.gz files produced by `cm-record`, replays events through

@@ -1,3 +1,4 @@
+#![allow(clippy::useless_conversion)]
 //! # cm-pybridge
 //!
 //! PyO3 bindings exposing the Rust trading core to Python for backtesting.
@@ -561,12 +562,9 @@ mod tests {
     fn test_synthetic_events_positive_prices() {
         let events = generate_synthetic_events(5000, 50000.0, 100.0);
         for (_, event) in &events {
-            match event {
-                ReplayEvent::BookUpdate(update) => {
-                    assert!(update.bids[0].0.to_f64() > 0.0);
-                    assert!(update.asks[0].0.to_f64() > 0.0);
-                }
-                _ => {}
+            if let ReplayEvent::BookUpdate(update) = event {
+                assert!(update.bids[0].0.to_f64() > 0.0);
+                assert!(update.asks[0].0.to_f64() > 0.0);
             }
         }
     }

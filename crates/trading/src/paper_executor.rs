@@ -37,6 +37,7 @@ struct RestingOrder {
     client_order_id: String,
     exchange: Exchange,
     symbol: Symbol,
+    #[allow(dead_code)]
     side: Side,
     price: Price,
     remaining: Quantity,
@@ -173,12 +174,12 @@ impl ExchangeGateway for PaperExecutor {
 
         let crosses = match order.side {
             Side::Buy => {
-                let ask = self.best_ask.lock().clone();
-                ask.map_or(false, |(ask_price, _)| order.price >= ask_price)
+                let ask = *self.best_ask.lock();
+                ask.is_some_and(|(ask_price, _)| order.price >= ask_price)
             }
             Side::Sell => {
-                let bid = self.best_bid.lock().clone();
-                bid.map_or(false, |(bid_price, _)| order.price <= bid_price)
+                let bid = *self.best_bid.lock();
+                bid.is_some_and(|(bid_price, _)| order.price <= bid_price)
             }
         };
 

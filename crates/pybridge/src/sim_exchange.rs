@@ -47,6 +47,7 @@ impl Default for LatencyConfig {
 
 /// A resting order in the simulated exchange.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SimOrder {
     id: OrderId,
     side: Side,
@@ -518,7 +519,7 @@ mod tests {
         exchange.set_time(1_000_000);
 
         // Submit a bid for 1.0 BTC
-        let oid = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(1.0));
+        let _oid = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(1.0));
 
         // Book update with ask that only has 0.3 quantity
         let book = make_book_update(49998.0, 1.0, 49999.0, 0.3);
@@ -550,7 +551,7 @@ mod tests {
         exchange.set_time(1_000_000);
 
         let oid1 = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(0.5));
-        let oid2 = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(0.5));
+        let _oid2 = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(0.5));
 
         // Book update with ask crossing, but only 0.5 qty available
         let book = make_book_update(49998.0, 1.0, 49999.0, 0.5);
@@ -611,7 +612,7 @@ mod tests {
 
         // Submit bids at different prices
         let oid1 = exchange.submit_order(Side::Buy, Price::from(50001.0), Quantity::from(0.5));
-        let oid2 = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(0.5));
+        let _oid2 = exchange.submit_order(Side::Buy, Price::from(50000.0), Quantity::from(0.5));
 
         // Book update with ask at 49999, qty 0.5 (only fills best bid)
         let book = make_book_update(49998.0, 1.0, 49999.0, 0.5);

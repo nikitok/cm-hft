@@ -79,7 +79,7 @@ mod tests {
         }
     }
 
-    fn make_ctx_with_mid(tracker: &PositionTracker, mid: f64) -> RiskContext {
+    fn make_ctx_with_mid(tracker: &PositionTracker, mid: f64) -> RiskContext<'_> {
         RiskContext {
             position_tracker: tracker,
             current_mid_price: Some(Price::from(mid)),

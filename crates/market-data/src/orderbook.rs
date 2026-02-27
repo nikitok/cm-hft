@@ -770,6 +770,7 @@ mod prop_tests {
         (1i64..1000000i64).prop_map(|m| Quantity::new(m, 8))
     }
 
+    #[allow(clippy::type_complexity)]
     fn arb_bid_ask_levels(
         max_levels: usize,
     ) -> impl Strategy<Value = (Vec<(Price, Quantity)>, Vec<(Price, Quantity)>)> {

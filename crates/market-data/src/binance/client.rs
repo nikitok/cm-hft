@@ -91,7 +91,7 @@ impl BinanceWsClient {
         );
 
         stream
-            .send(Message::Text(msg_text.into()))
+            .send(Message::Text(msg_text))
             .await
             .context("failed to send subscribe message")?;
 

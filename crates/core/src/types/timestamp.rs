@@ -65,11 +65,7 @@ impl Timestamp {
     /// should not go backwards, but this is defensive).
     #[inline]
     pub const fn elapsed_since(&self, earlier: &Timestamp) -> u64 {
-        if self.0 >= earlier.0 {
-            self.0 - earlier.0
-        } else {
-            0
-        }
+        self.0.saturating_sub(earlier.0)
     }
 }
 

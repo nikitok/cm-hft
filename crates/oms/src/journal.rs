@@ -58,8 +58,7 @@ impl OrderJournal {
     /// Corrupt lines are skipped with a warning log. Returns all
     /// successfully deserialized events in order.
     pub fn replay(&self) -> Result<Vec<OrderEvent>> {
-        let file =
-            File::open(&self.path).with_context(|| format!("failed to open journal for replay"))?;
+        let file = File::open(&self.path).with_context(|| "failed to open journal for replay")?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
 
@@ -126,12 +125,11 @@ impl OrderJournal {
 
     /// Count the number of events (lines) in the journal.
     pub fn event_count(&self) -> Result<usize> {
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open journal for counting"))?;
+        let file = File::open(&self.path).with_context(|| "failed to open journal for counting")?;
         let reader = BufReader::new(file);
         let count = reader
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(Result::ok)
             .filter(|l| !l.trim().is_empty())
             .count();
         Ok(count)
@@ -259,7 +257,7 @@ mod tests {
         assert!(rotated.exists());
         let old_file = File::open(&rotated).unwrap();
         let old_reader = BufReader::new(old_file);
-        let old_lines: Vec<_> = old_reader.lines().filter_map(|l| l.ok()).collect();
+        let old_lines: Vec<_> = old_reader.lines().map_while(Result::ok).collect();
         assert_eq!(old_lines.len(), 2);
 
         // New file should be empty

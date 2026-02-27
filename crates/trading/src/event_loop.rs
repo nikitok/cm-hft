@@ -442,8 +442,8 @@ pub async fn action_processor(
                 OrderAction::CancelAll { exchange, symbol } => {
                     let open_orders = state.order_manager.get_open_orders();
                     for order in open_orders {
-                        let matches_exchange = exchange.map_or(true, |e| order.exchange == e);
-                        let matches_symbol = symbol.as_ref().map_or(true, |s| order.symbol == *s);
+                        let matches_exchange = exchange.is_none_or(|e| order.exchange == e);
+                        let matches_symbol = symbol.as_ref().is_none_or(|s| order.symbol == *s);
 
                         if matches_exchange && matches_symbol {
                             if let Some(eid) = &order.exchange_order_id {

@@ -13,6 +13,7 @@ use super::traits::{Strategy, StrategyParams};
 ///
 /// Maps strategy names to factory functions that create boxed trait objects.
 pub struct StrategyRegistry {
+    #[allow(clippy::type_complexity)]
     factories: HashMap<String, Box<dyn Fn(&StrategyParams) -> Box<dyn Strategy>>>,
 }
 

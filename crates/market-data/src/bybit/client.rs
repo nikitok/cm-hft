@@ -30,7 +30,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 ///
 /// This is a standalone config until `ExchangeConfig` from `cm-core` is
 /// available. Fields mirror what `ExchangeConfig` will provide.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BybitConfig {
     /// Use testnet endpoint if `true`.
     pub testnet: bool,
@@ -38,16 +38,6 @@ pub struct BybitConfig {
     pub ws_url: Option<String>,
     /// Reconnection configuration.
     pub reconnect: ReconnectConfig,
-}
-
-impl Default for BybitConfig {
-    fn default() -> Self {
-        Self {
-            testnet: false,
-            ws_url: None,
-            reconnect: ReconnectConfig::default(),
-        }
-    }
 }
 
 /// Bybit WebSocket client for public market data feeds.
