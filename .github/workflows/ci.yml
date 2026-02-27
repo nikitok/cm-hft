@@ -71,18 +71,25 @@ jobs:
   go:
     name: Go Lint & Test
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('infra/monitoring/go.mod') != '' }}
     defaults:
       run:
         working-directory: infra/monitoring
     steps:
       - uses: actions/checkout@v4
+      - name: Check go.mod exists
+        id: check
+        run: test -f infra/monitoring/go.mod
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
       - uses: actions/setup-go@v5
+        if: steps.check.outcome == 'success'
         with:
           go-version: '1.22'
       - name: Vet
+        if: steps.check.outcome == 'success'
         run: go vet ./...
       - name: Test
+        if: steps.check.outcome == 'success'
         run: go test -v ./...
 
   docker:
