@@ -71,7 +71,7 @@ jobs:
   go:
     name: Go Lint & Test
     runs-on: ubuntu-latest
-    if: hashFiles('infra/monitoring/go.mod') != ''
+    if: ${{ hashFiles('infra/monitoring/go.mod') != '' }}
     defaults:
       run:
         working-directory: infra/monitoring
