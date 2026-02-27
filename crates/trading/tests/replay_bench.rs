@@ -801,6 +801,220 @@ fn bench_series() {
             },
             SimConfig::default(),
         ),
+        // ── ML shift mode (baseline for comparison) ──
+        (
+            "adaptive_mm",
+            "ML shift f=0.3",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.3,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "shift",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        // ── ML width mode: widen spread symmetrically based on confidence ──
+        (
+            "adaptive_mm",
+            "ML width f=0.3",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.3,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML width f=0.5",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.5,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML width f=1.0",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 1.0,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        // ── ML skew mode: widen only adverse side of spread ──
+        (
+            "adaptive_mm",
+            "ML skew f=0.3",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.3,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "skew",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML skew f=0.5",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.5,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "skew",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML skew f=1.0",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 1.0,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "skew",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        // ── ML width fine-tuning ──
+        (
+            "adaptive_mm",
+            "ML width f=0.7",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 0.7,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML width f=1.5",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 1.5,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
+        (
+            "adaptive_mm",
+            "ML width f=2.0",
+            StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": 2.0,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "ml_factor": 2.0,
+                    "ml_threshold": 0.05,
+                    "ml_mode": "width",
+                    "ml_weights_path": "../../models/mid_predictor.safetensors"
+                }),
+            },
+            SimConfig::default(),
+        ),
         // ── Tuned variants ──
         (
             "adaptive_mm",

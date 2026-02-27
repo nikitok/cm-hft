@@ -38,6 +38,10 @@ dashmap = "6"
 flate2 = "1"
 chrono = "0.4"
 
+[features]
+default = []
+ml = ["cm-strategy/ml"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 crossbeam = { workspace = true }

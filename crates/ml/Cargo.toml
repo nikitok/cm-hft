@@ -1,0 +1,31 @@
+[package]
+name = "cm-ml"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "cm_ml"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cm-ml-train"
+path = "src/bin/train.rs"
+
+[dependencies]
+candle-core = { version = "0.8", features = ["metal"] }
+candle-nn = "0.8"
+safetensors = "0.5"
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Training binary deps
+cm-core = { workspace = true }
+cm-market-data = { path = "../market-data" }
+flate2 = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

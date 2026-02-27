@@ -1,6 +1,8 @@
 //! Adaptive market-making strategy with Avellaneda-Stoikov pricing, VPIN-based
 //! spread adjustment, asymmetric sizing, and volatility-adaptive quoting.
 
+use std::collections::VecDeque;
+
 use cm_core::types::*;
 use cm_market_data::orderbook::OrderBook;
 
@@ -8,6 +10,32 @@ use crate::context::TradingContext;
 use crate::traits::{Fill, Strategy, StrategyParams};
 
 use super::signals::{Ema, TradeFlowSignal, VolatilityTracker, VpinTracker};
+
+/// ML integration mode.
+///
+/// - `Shift`: shift reservation price (directional bet).
+/// - `Width`: widen spread symmetrically based on confidence (protective).
+/// - `Skew`: widen only the adverse side of the spread (protective, directional).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MlMode {
+    /// Shift reservation price by signal × factor × half_spread.
+    Shift,
+    /// Widen spread symmetrically by |signal| × factor × half_spread.
+    Width,
+    /// Widen only the adverse side: if signal > 0, widen ask; if < 0, widen bid.
+    /// Never narrows either side — only adds protection.
+    Skew,
+}
+
+impl MlMode {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "width" => Self::Width,
+            "skew" => Self::Skew,
+            _ => Self::Shift,
+        }
+    }
+}
 
 /// Adaptive market maker with A-S pricing, VPIN, and asymmetric sizing.
 pub struct AdaptiveMarketMaker {
@@ -41,6 +69,16 @@ pub struct AdaptiveMarketMaker {
     fair_value_ema: Ema,
     vpin_tracker: VpinTracker,
 
+    // ── ML signal ──
+    #[cfg(feature = "ml")]
+    ml_signal: Option<cm_ml::predictor::MlSignal>,
+    ml_factor: f64,
+    ml_threshold: f64,
+    ml_mode: MlMode,
+
+    // ── Recent mid history for return calculation ──
+    recent_mids: VecDeque<f64>,
+
     // ── Quoting state ──
     last_quoted_mid: Option<f64>,
     needs_requote: bool,
@@ -73,6 +111,12 @@ impl AdaptiveMarketMaker {
     // Asymmetric sizing defaults
     const DEFAULT_SIZE_DECAY_POWER: f64 = 2.0;
     const DEFAULT_REDUCE_BOOST: f64 = 0.5;
+
+    // ML defaults
+    const DEFAULT_ML_FACTOR: f64 = 1.0;
+    const DEFAULT_ML_THRESHOLD: f64 = 0.05; // dead zone: ignore |signal| < threshold
+    const DEFAULT_ML_MODE: MlMode = MlMode::Width;
+    const DEFAULT_ML_WEIGHTS_PATH: &str = "models/mid_predictor.safetensors";
 
     pub fn from_params(params: &StrategyParams) -> Self {
         let vol_ema_span = params
@@ -146,6 +190,30 @@ impl AdaptiveMarketMaker {
             trade_flow: TradeFlowSignal::new(trade_flow_span),
             fair_value_ema: Ema::new(20),
             vpin_tracker: VpinTracker::new(vpin_bucket_size, vpin_n_buckets),
+            #[cfg(feature = "ml")]
+            ml_signal: {
+                let weights_path = params
+                    .get_str("ml_weights_path")
+                    .unwrap_or(Self::DEFAULT_ML_WEIGHTS_PATH);
+                match cm_ml::predictor::MlSignal::try_load(std::path::Path::new(weights_path)) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        tracing::warn!("failed to load ML model: {e}");
+                        None
+                    }
+                }
+            },
+            ml_factor: params
+                .get_f64("ml_factor")
+                .unwrap_or(Self::DEFAULT_ML_FACTOR),
+            ml_threshold: params
+                .get_f64("ml_threshold")
+                .unwrap_or(Self::DEFAULT_ML_THRESHOLD),
+            ml_mode: params
+                .get_str("ml_mode")
+                .map(|s| MlMode::from_str(s))
+                .unwrap_or(Self::DEFAULT_ML_MODE),
+            recent_mids: VecDeque::with_capacity(32),
             last_quoted_mid: None,
             needs_requote: false,
         }
@@ -215,7 +283,101 @@ impl Strategy for AdaptiveMarketMaker {
             self.trade_flow.imbalance() * self.trade_flow_factor * preliminary_half;
         let book_imb_adj =
             self.book_imbalance(book) * self.book_imbalance_factor * preliminary_half;
-        let adjusted_mid = fair_value + trade_flow_adj + book_imb_adj;
+
+        // ML signal adjustment.
+        // Returns (ml_adj, ml_bid_extra, ml_ask_extra):
+        //   - ml_adj: shift to reservation price (Shift mode)
+        //   - ml_bid_extra: additional spread on bid side (Skew/Width modes)
+        //   - ml_ask_extra: additional spread on ask side (Skew/Width modes)
+        // Compute all feature inputs BEFORE borrowing ml_signal mutably.
+        let (ml_adj, ml_bid_extra, ml_ask_extra) = {
+            #[cfg(feature = "ml")]
+            {
+                let book_imb = self.book_imbalance(book);
+                let trade_flow_imb = self.trade_flow.imbalance();
+                let vpin_val = self.vpin_tracker.vpin();
+                let spread_bps = book.spread_bps().unwrap_or(0.0);
+                let recent_return_bps = if let Some(&prev) = self.recent_mids.back() {
+                    if prev > 0.0 {
+                        (mid - prev) / prev * 10_000.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                let norm_pos = if self.max_position > 1e-12 {
+                    (net_pos / self.max_position).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+                let ml_factor = self.ml_factor;
+                let ml_threshold = self.ml_threshold;
+                let ml_mode = self.ml_mode;
+
+                if let Some(ref mut ml) = self.ml_signal {
+                    let features = cm_ml::features::MlFeatures {
+                        book_imbalance: book_imb,
+                        trade_flow_imbalance: trade_flow_imb,
+                        vpin: vpin_val,
+                        volatility_bps: vol_bps,
+                        spread_bps,
+                        recent_return_bps,
+                        normalized_position: norm_pos,
+                    };
+                    let raw_signal = ml.predict(&features);
+                    // Dead zone: ignore weak predictions
+                    let signal = if raw_signal.abs() < ml_threshold {
+                        0.0
+                    } else {
+                        // Remove the dead zone and rescale
+                        let sign = raw_signal.signum();
+                        let magnitude =
+                            (raw_signal.abs() - ml_threshold) / (0.5 - ml_threshold);
+                        sign * magnitude
+                    };
+
+                    match ml_mode {
+                        MlMode::Shift => {
+                            // Current behavior: shift reservation price.
+                            (signal * ml_factor * preliminary_half, 0.0, 0.0)
+                        }
+                        MlMode::Width => {
+                            // Use confidence (|signal|) to widen spread symmetrically.
+                            // More confident = wider spread = more protection.
+                            let extra = signal.abs() * 2.0 * ml_factor * preliminary_half;
+                            (0.0, extra, extra)
+                        }
+                        MlMode::Skew => {
+                            // Widen only the adverse side of the spread.
+                            // If signal > 0 (predicts up): widen ask (protect selling too cheap).
+                            // If signal < 0 (predicts down): widen bid (protect buying too high).
+                            // Never narrows either side.
+                            let magnitude = signal.abs() * ml_factor * preliminary_half;
+                            if signal > 0.0 {
+                                (0.0, 0.0, magnitude)
+                            } else if signal < 0.0 {
+                                (0.0, magnitude, 0.0)
+                            } else {
+                                (0.0, 0.0, 0.0)
+                            }
+                        }
+                    }
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
+            }
+            #[cfg(not(feature = "ml"))]
+            { (0.0, 0.0, 0.0) }
+        };
+
+        // Track recent mids for return calculation.
+        self.recent_mids.push_back(mid);
+        if self.recent_mids.len() > 20 {
+            self.recent_mids.pop_front();
+        }
+
+        let adjusted_mid = fair_value + trade_flow_adj + book_imb_adj + ml_adj;
 
         // 5. Avellaneda-Stoikov pricing.
         let half_spread;
@@ -301,7 +463,7 @@ impl Strategy for AdaptiveMarketMaker {
             let level_offset = half_spread * level as f64;
 
             if bid_size > 1e-8 {
-                let bid = reservation_price - half_spread - level_offset;
+                let bid = reservation_price - half_spread - level_offset - ml_bid_extra;
                 ctx.submit_order(
                     exchange,
                     symbol.clone(),
@@ -313,7 +475,7 @@ impl Strategy for AdaptiveMarketMaker {
             }
 
             if ask_size > 1e-8 {
-                let ask = reservation_price + half_spread + level_offset;
+                let ask = reservation_price + half_spread + level_offset + ml_ask_extra;
                 ctx.submit_order(
                     exchange,
                     symbol.clone(),
@@ -400,6 +562,15 @@ impl Strategy for AdaptiveMarketMaker {
         }
         if let Some(v) = params.get_f64("reduce_boost") {
             self.reduce_boost = v;
+        }
+        if let Some(v) = params.get_f64("ml_factor") {
+            self.ml_factor = v;
+        }
+        if let Some(v) = params.get_f64("ml_threshold") {
+            self.ml_threshold = v;
+        }
+        if let Some(v) = params.get_str("ml_mode") {
+            self.ml_mode = MlMode::from_str(v);
         }
         self.last_quoted_mid = None;
     }

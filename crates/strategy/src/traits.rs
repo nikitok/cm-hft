@@ -73,4 +73,9 @@ impl StrategyParams {
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.params.get(key).and_then(|v| v.as_bool())
     }
+
+    /// Get a parameter as `&str`, returning `None` if absent or wrong type.
+    pub fn get_str(&self, key: &str) -> Option<&str> {
+        self.params.get(key).and_then(|v| v.as_str())
+    }
 }

@@ -26,6 +26,7 @@ build/
 # Data
 *.parquet
 data/
+testdata/
 
 # Infrastructure
 questdb-data/
