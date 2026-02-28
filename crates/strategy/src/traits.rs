@@ -78,4 +78,9 @@ impl StrategyParams {
     pub fn get_str(&self, key: &str) -> Option<&str> {
         self.params.get(key).and_then(|v| v.as_str())
     }
+
+    /// Get a parameter as a JSON object (`&serde_json::Map`), returning `None` if absent or wrong type.
+    pub fn get_object(&self, key: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.params.get(key).and_then(|v| v.as_object())
+    }
 }

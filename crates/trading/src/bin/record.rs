@@ -1,4 +1,4 @@
-//! cm-record — Record Bybit market data to JSONL files.
+//! cm-record — Record exchange market data to JSONL files.
 //!
 //! Writes to plain `.jsonl` during recording for crash safety. On clean
 //! shutdown, compresses to `.jsonl.gz` and removes the uncompressed file.
@@ -7,7 +7,8 @@
 //! next run.
 //!
 //! Usage:
-//!   cm-record --symbols BTCUSDT,ETHUSDT --duration 30m --output testdata/
+//!   cm-record --exchange bybit --symbols BTCUSDT,ETHUSDT --duration 30m --output testdata/
+//!   cm-record --exchange binance --symbols BTCUSDT,ETHUSDT --duration 1h --output testdata/
 
 use std::collections::HashMap;
 use std::io::{BufWriter, Read, Write};
@@ -23,7 +24,9 @@ use flate2::Compression;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use cm_core::config::ExchangeConfig;
 use cm_core::types::{BookUpdate, Trade};
+use cm_market_data::binance::{BinanceMessage, BinanceWsClient};
 use cm_market_data::bybit::client::{BybitConfig, BybitWsClient};
 
 /// A recorded market data event.
@@ -38,8 +41,12 @@ struct RecordedEvent {
 }
 
 #[derive(Parser)]
-#[command(name = "cm-record", about = "Record Bybit market data to JSONL.gz")]
+#[command(name = "cm-record", about = "Record exchange market data to JSONL.gz")]
 struct Args {
+    /// Exchange to record from: binance or bybit.
+    #[arg(long, default_value = "bybit")]
+    exchange: String,
+
     /// Comma-separated symbols to record (e.g., BTCUSDT,ETHUSDT).
     #[arg(long, value_delimiter = ',')]
     symbols: Vec<String>,
@@ -52,7 +59,7 @@ struct Args {
     #[arg(long, default_value = "testdata")]
     output: PathBuf,
 
-    /// Use timestamped filenames: bybit_btcusdt_2026-02-26_22:00.jsonl.gz
+    /// Use timestamped filenames: {exchange}_{symbol}_{timestamp}.jsonl.gz
     #[arg(long, default_value_t = false)]
     timestamp: bool,
 }
@@ -74,17 +81,90 @@ fn parse_duration(s: &str) -> Result<Duration> {
 }
 
 /// Build the base filename (without extension) for a symbol.
-fn base_filename(symbol: &str, duration_label: &str, timestamp: bool) -> String {
+fn base_filename(exchange: &str, symbol: &str, duration_label: &str, timestamp: bool) -> String {
     if timestamp {
         let now = chrono::Local::now();
         format!(
-            "bybit_{}_{}",
+            "{}_{}_{}",
+            exchange,
             symbol.to_lowercase(),
             now.format("%Y-%m-%d_%H:%M")
         )
     } else {
-        format!("bybit_{}_{}", symbol.to_lowercase(), duration_label)
+        format!("{}_{}_{}", exchange, symbol.to_lowercase(), duration_label)
     }
+}
+
+/// Run Binance WebSocket recording with automatic reconnection.
+async fn run_binance_ws(
+    symbols: Vec<String>,
+    book_tx: mpsc::Sender<BookUpdate>,
+    trade_tx: mpsc::Sender<Trade>,
+    shutdown: tokio_util::sync::CancellationToken,
+) {
+    let config = ExchangeConfig {
+        api_key: String::new(),
+        api_secret: String::new(),
+        testnet: false,
+        ws_url: "wss://stream.binance.com:9443/ws".to_string(),
+        rest_url: "https://api.binance.com".to_string(),
+        timeout_ms: 5000,
+    };
+    let client = BinanceWsClient::new(config, symbols);
+
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+
+        let mut stream = match client.connect().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "Binance WS connect failed, retrying");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        if let Err(e) = client.subscribe(&mut stream).await {
+            tracing::error!(error = %e, "Binance WS subscribe failed, retrying");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
+        tracing::info!("Binance WS connected and subscribed");
+
+        loop {
+            if shutdown.is_cancelled() {
+                break;
+            }
+            match BinanceWsClient::read_message(&mut stream).await {
+                Ok(Some(BinanceMessage::Depth(book_update))) => {
+                    if book_tx.send(book_update).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(Some(BinanceMessage::Trade(trade))) => {
+                    if trade_tx.send(trade).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::error!(error = %e, "Binance WS read error, reconnecting");
+                    break;
+                }
+            }
+        }
+
+        if shutdown.is_cancelled() {
+            break;
+        }
+        tracing::warn!("Binance WS disconnected, reconnecting in 5s");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+
+    tracing::info!("Binance feed task stopped");
 }
 
 /// Compress a .jsonl file to .jsonl.gz and remove the original.
@@ -104,6 +184,14 @@ async fn main() -> Result<()> {
     cm_core::logging::init_tracing(true);
     let args = Args::parse();
 
+    let exchange = args.exchange.to_lowercase();
+    if exchange != "bybit" && exchange != "binance" {
+        anyhow::bail!(
+            "unsupported exchange '{}', use --exchange bybit or --exchange binance",
+            exchange
+        );
+    }
+
     if args.symbols.is_empty() {
         anyhow::bail!("no symbols specified, use --symbols BTCUSDT,ETHUSDT");
     }
@@ -115,6 +203,7 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&args.output)?;
 
     tracing::info!(
+        exchange = %exchange,
         symbols = ?args.symbols,
         duration = ?duration,
         output = %args.output.display(),
@@ -130,7 +219,7 @@ async fn main() -> Result<()> {
 
     let mut writers: HashMap<String, SymWriter> = HashMap::new();
     for symbol in &args.symbols {
-        let base = base_filename(symbol, duration_label, args.timestamp);
+        let base = base_filename(&exchange, symbol, duration_label, args.timestamp);
         let jsonl_path = args.output.join(format!("{}.jsonl", base));
         let gz_path = args.output.join(format!("{}.jsonl.gz", base));
 
@@ -159,16 +248,25 @@ async fn main() -> Result<()> {
     let (book_tx, mut book_rx) = mpsc::channel::<BookUpdate>(4096);
     let (trade_tx, mut trade_rx) = mpsc::channel::<Trade>(4096);
 
-    // Spawn Bybit WS client.
-    let client = BybitWsClient::new(BybitConfig::default(), args.symbols.clone());
-    let ws_handle = tokio::spawn(async move {
-        if let Err(e) = client.run(book_tx, trade_tx).await {
-            tracing::error!(error = %e, "Bybit WS client error");
-        }
-    });
-
     // Shutdown signal.
     let shutdown = tokio_util::sync::CancellationToken::new();
+
+    // Spawn exchange WS client.
+    let symbols_for_ws = args.symbols.clone();
+    let ws_handle = if exchange == "binance" {
+        let shutdown_ws = shutdown.clone();
+        tokio::spawn(async move {
+            run_binance_ws(symbols_for_ws, book_tx, trade_tx, shutdown_ws).await;
+        })
+    } else {
+        let client = BybitWsClient::new(BybitConfig::default(), symbols_for_ws);
+        tokio::spawn(async move {
+            if let Err(e) = client.run(book_tx, trade_tx).await {
+                tracing::error!(error = %e, "Bybit WS client error");
+            }
+        })
+    };
+
     let shutdown_clone = shutdown.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();

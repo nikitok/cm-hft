@@ -12,7 +12,7 @@ name = "cm-ml-train"
 path = "src/bin/train.rs"
 
 [dependencies]
-candle-core = { version = "0.8", features = ["metal"] }
+candle-core = "0.8"
 candle-nn = "0.8"
 safetensors = "0.5"
 anyhow.workspace = true

@@ -25,13 +25,13 @@ fn smoke_train_synthetic() {
         let sign = if i % 2 == 0 { 1.0_f32 } else { -1.0 };
         // Feature: [imbalance, flow, vpin, vol, spread, return, position]
         features.extend_from_slice(&[
-            sign * 0.8,         // book_imbalance
-            sign * 0.5,         // trade_flow
-            0.3,                // vpin (neutral)
-            2.0,                // vol
-            3.0,                // spread
-            sign * 5.0,         // recent return
-            0.0,                // position
+            sign * 0.8, // book_imbalance
+            sign * 0.5, // trade_flow
+            0.3,        // vpin (neutral)
+            2.0,        // vol
+            3.0,        // spread
+            sign * 5.0, // recent return
+            0.0,        // position
         ]);
         labels.push(if sign > 0.0 { 1.0_f32 } else { 0.0 });
     }
@@ -75,7 +75,11 @@ fn smoke_train_synthetic() {
     );
 
     // Check accuracy on synthetic data (logit space: >0 = up).
-    let preds = logits_final.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+    let preds = logits_final
+        .flatten_all()
+        .unwrap()
+        .to_vec1::<f32>()
+        .unwrap();
     let correct = preds
         .iter()
         .enumerate()
@@ -86,7 +90,10 @@ fn smoke_train_synthetic() {
         .count();
     let acc = correct as f64 / n as f64 * 100.0;
     println!("Accuracy: {acc:.1}%");
-    assert!(acc > 60.0, "accuracy should be > 60% on synthetic data, got {acc}%");
+    assert!(
+        acc > 60.0,
+        "accuracy should be > 60% on synthetic data, got {acc}%"
+    );
 }
 
 #[test]
@@ -109,10 +116,7 @@ fn smoke_predictor_integration() {
             normalized_position: 0.0,
         };
         let val = signal.predict(&features);
-        assert!(
-            val >= -0.5 && val <= 0.5,
-            "signal out of range: {val}"
-        );
+        assert!((-0.5..=0.5).contains(&val), "signal out of range: {val}");
     }
 }
 
@@ -140,7 +144,7 @@ fn smoke_predictor_with_fixed_stats() {
     };
     let val = signal.predict(&features);
     assert!(
-        val >= -0.5 && val <= 0.5,
+        (-0.5..=0.5).contains(&val),
         "signal should be in [-0.5, 0.5], got {val}"
     );
 }

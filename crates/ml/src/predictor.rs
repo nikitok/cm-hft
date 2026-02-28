@@ -1,8 +1,11 @@
 //! Strategy-facing inference wrapper.
 //!
-//! [`MlSignal`] combines the neural network with normalization
-//! and device selection. It returns a directional signal in [-0.5, 0.5]
-//! that the strategy can use to shift fair value.
+//! [`MlSignal`] combines the neural network with normalization.
+//! It returns a directional signal in [-0.5, 0.5] that the strategy
+//! can use to shift fair value.
+//!
+//! At load time, candle weights are extracted into [`RawWeights`] for
+//! zero-allocation inference on the hot path.
 //!
 //! Normalization priority:
 //! 1. Fixed stats from training (JSON sidecar) — preferred, consistent with training
@@ -14,7 +17,7 @@ use anyhow::Result;
 use candle_core::Device;
 
 use crate::features::MlFeatures;
-use crate::model::MidPredictor;
+use crate::model::{MidPredictor, RawWeights};
 use crate::normalize::{NormStats, RunningNormalizer};
 
 /// Normalization strategy: fixed (from training) or online (Welford).
@@ -25,9 +28,8 @@ enum Normalizer {
 
 /// Inference wrapper for the mid-price predictor.
 pub struct MlSignal {
-    model: MidPredictor,
+    weights: RawWeights,
     normalizer: Normalizer,
-    device: Device,
 }
 
 impl MlSignal {
@@ -44,10 +46,12 @@ impl MlSignal {
             return Ok(None);
         }
 
-        let device = Self::select_device();
-        tracing::info!(?path, ?device, "loading ML model");
+        let device = Device::Cpu;
+        tracing::info!(?path, "loading ML model");
 
         let model = MidPredictor::load(path, &device)?;
+        let weights = model.extract_weights()?;
+        // candle model dropped here — only RawWeights kept
 
         // Try loading normalization stats from sidecar file.
         let norm_path = path.with_extension("norm.json");
@@ -68,27 +72,24 @@ impl MlSignal {
         };
 
         Ok(Some(Self {
-            model,
+            weights,
             normalizer,
-            device,
         }))
     }
 
     /// Create from an already-loaded model (for testing).
-    pub fn from_model(model: MidPredictor, device: Device) -> Self {
+    pub fn from_model(model: MidPredictor, _device: Device) -> Self {
         Self {
-            model,
+            weights: model.extract_weights().expect("weight extraction"),
             normalizer: Normalizer::Online(RunningNormalizer::new(100)),
-            device,
         }
     }
 
     /// Create from model + pre-computed stats (for testing / explicit construction).
-    pub fn from_model_with_stats(model: MidPredictor, stats: NormStats, device: Device) -> Self {
+    pub fn from_model_with_stats(model: MidPredictor, stats: NormStats, _device: Device) -> Self {
         Self {
-            model,
+            weights: model.extract_weights().expect("weight extraction"),
             normalizer: Normalizer::Fixed(stats),
-            device,
         }
     }
 
@@ -117,27 +118,7 @@ impl MlSignal {
             input[i] = normalized[i] as f32;
         }
 
-        match self.model.predict_one(&input, &self.device) {
-            Ok(prob) => prob as f64 - 0.5, // center around 0
-            Err(e) => {
-                tracing::warn!("ML inference failed: {e}");
-                0.0
-            }
-        }
-    }
-
-    /// Select the best available device (Metal > CPU).
-    fn select_device() -> Device {
-        match Device::new_metal(0) {
-            Ok(d) => {
-                tracing::info!("using Metal GPU for ML inference");
-                d
-            }
-            Err(_) => {
-                tracing::info!("Metal not available, using CPU for ML inference");
-                Device::Cpu
-            }
-        }
+        self.weights.predict(&input) as f64 - 0.5 // center around 0
     }
 }
 
@@ -193,7 +174,7 @@ mod tests {
         // After warmup, should return a value in [-0.5, 0.5].
         let val = signal.predict(&features);
         assert!(
-            val >= -0.5 && val <= 0.5,
+            (-0.5..=0.5).contains(&val),
             "signal should be in [-0.5, 0.5], got {val}"
         );
     }
@@ -221,11 +202,9 @@ mod tests {
         // With fixed stats, should produce signal immediately (no warmup needed).
         let val = signal.predict(&features);
         assert!(
-            val >= -0.5 && val <= 0.5,
+            (-0.5..=0.5).contains(&val),
             "signal should be in [-0.5, 0.5], got {val}"
         );
-        // And it should NOT be exactly 0 (random weights give non-zero output).
-        // (With random init this is almost certainly true.)
     }
 
     #[test]

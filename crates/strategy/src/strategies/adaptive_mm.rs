@@ -1,7 +1,7 @@
 //! Adaptive market-making strategy with Avellaneda-Stoikov pricing, VPIN-based
 //! spread adjustment, asymmetric sizing, and volatility-adaptive quoting.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use cm_core::types::*;
 use cm_market_data::orderbook::OrderBook;
@@ -75,6 +75,8 @@ pub struct AdaptiveMarketMaker {
     ml_factor: f64,
     ml_threshold: f64,
     ml_mode: MlMode,
+    /// Per-symbol ML overrides: symbol → (mode, factor, threshold).
+    ml_overrides: HashMap<String, (MlMode, f64, f64)>,
 
     // ── Recent mid history for return calculation ──
     recent_mids: VecDeque<f64>,
@@ -116,6 +118,7 @@ impl AdaptiveMarketMaker {
     const DEFAULT_ML_FACTOR: f64 = 1.0;
     const DEFAULT_ML_THRESHOLD: f64 = 0.05; // dead zone: ignore |signal| < threshold
     const DEFAULT_ML_MODE: MlMode = MlMode::Width;
+    #[cfg(feature = "ml")]
     const DEFAULT_ML_WEIGHTS_PATH: &str = "models/mid_predictor.safetensors";
 
     pub fn from_params(params: &StrategyParams) -> Self {
@@ -211,11 +214,48 @@ impl AdaptiveMarketMaker {
                 .unwrap_or(Self::DEFAULT_ML_THRESHOLD),
             ml_mode: params
                 .get_str("ml_mode")
-                .map(|s| MlMode::from_str(s))
+                .map(MlMode::from_str)
                 .unwrap_or(Self::DEFAULT_ML_MODE),
+            ml_overrides: Self::parse_ml_overrides(params),
             recent_mids: VecDeque::with_capacity(32),
             last_quoted_mid: None,
             needs_requote: false,
+        }
+    }
+
+    /// Parse `ml_overrides` from params JSON.
+    /// Expected format: `{"ETHUSDT": {"ml_mode": "shift", "ml_factor": 0.3, "ml_threshold": 0.05}}`.
+    fn parse_ml_overrides(params: &StrategyParams) -> HashMap<String, (MlMode, f64, f64)> {
+        let mut overrides = HashMap::new();
+        if let Some(obj) = params.get_object("ml_overrides") {
+            for (symbol, val) in obj {
+                let mode = val
+                    .get("ml_mode")
+                    .and_then(|v| v.as_str())
+                    .map(MlMode::from_str)
+                    .unwrap_or(Self::DEFAULT_ML_MODE);
+                let factor = val
+                    .get("ml_factor")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(Self::DEFAULT_ML_FACTOR);
+                let threshold = val
+                    .get("ml_threshold")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(Self::DEFAULT_ML_THRESHOLD);
+                overrides.insert(symbol.clone(), (mode, factor, threshold));
+            }
+        }
+        overrides
+    }
+
+    /// Look up ML parameters for a symbol.
+    /// Returns `(mode, factor, threshold)` — per-symbol override if present, else global defaults.
+    #[cfg(feature = "ml")]
+    fn ml_params_for_symbol(&self, symbol: &str) -> (MlMode, f64, f64) {
+        if let Some(&(mode, factor, threshold)) = self.ml_overrides.get(symbol) {
+            (mode, factor, threshold)
+        } else {
+            (self.ml_mode, self.ml_factor, self.ml_threshold)
         }
     }
 
@@ -311,9 +351,7 @@ impl Strategy for AdaptiveMarketMaker {
                 } else {
                     0.0
                 };
-                let ml_factor = self.ml_factor;
-                let ml_threshold = self.ml_threshold;
-                let ml_mode = self.ml_mode;
+                let (ml_mode, ml_factor, ml_threshold) = self.ml_params_for_symbol(&symbol.0);
 
                 if let Some(ref mut ml) = self.ml_signal {
                     let features = cm_ml::features::MlFeatures {
@@ -332,8 +370,7 @@ impl Strategy for AdaptiveMarketMaker {
                     } else {
                         // Remove the dead zone and rescale
                         let sign = raw_signal.signum();
-                        let magnitude =
-                            (raw_signal.abs() - ml_threshold) / (0.5 - ml_threshold);
+                        let magnitude = (raw_signal.abs() - ml_threshold) / (0.5 - ml_threshold);
                         sign * magnitude
                     };
 
@@ -368,7 +405,9 @@ impl Strategy for AdaptiveMarketMaker {
                 }
             }
             #[cfg(not(feature = "ml"))]
-            { (0.0, 0.0, 0.0) }
+            {
+                (0.0, 0.0, 0.0)
+            }
         };
 
         // Track recent mids for return calculation.
@@ -571,6 +610,9 @@ impl Strategy for AdaptiveMarketMaker {
         }
         if let Some(v) = params.get_str("ml_mode") {
             self.ml_mode = MlMode::from_str(v);
+        }
+        if params.get_object("ml_overrides").is_some() {
+            self.ml_overrides = Self::parse_ml_overrides(params);
         }
         self.last_quoted_mid = None;
     }

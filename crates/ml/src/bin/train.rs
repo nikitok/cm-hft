@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{loss, optim, VarBuilder, VarMap};
 use candle_nn::Optimizer;
+use candle_nn::{loss, optim, VarBuilder, VarMap};
 use clap::Parser;
 use flate2::read::GzDecoder;
 use serde::Deserialize;
@@ -204,7 +204,10 @@ impl SymbolState {
 }
 
 #[derive(Parser)]
-#[command(name = "cm-ml-train", about = "Train mid-price predictor on replay data")]
+#[command(
+    name = "cm-ml-train",
+    about = "Train mid-price predictor on replay data"
+)]
 struct Args {
     /// Directory containing JSONL.gz replay files.
     #[arg(long, default_value = "testdata")]
@@ -267,7 +270,7 @@ enum ReplayEvent {
 
 fn load_events(path: &Path) -> Result<Vec<ReplayEvent>> {
     let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let reader: Box<dyn BufRead> = if path.extension().map_or(false, |e| e == "gz") {
+    let reader: Box<dyn BufRead> = if path.extension().is_some_and(|e| e == "gz") {
         Box::new(BufReader::new(GzDecoder::new(file)))
     } else {
         Box::new(BufReader::new(file))
@@ -275,11 +278,7 @@ fn load_events(path: &Path) -> Result<Vec<ReplayEvent>> {
 
     // Try to extract symbol from filename (e.g., "bybit_BTCUSDT_20240101.jsonl.gz")
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let default_symbol = filename
-        .split('_')
-        .nth(1)
-        .unwrap_or("UNKNOWN")
-        .to_string();
+    let default_symbol = filename.split('_').nth(1).unwrap_or("UNKNOWN").to_string();
 
     let mut events = Vec::new();
     for line in reader.lines() {
@@ -439,8 +438,8 @@ fn normalize_features(
             mean[i] += f[i];
         }
     }
-    for i in 0..7 {
-        mean[i] /= n;
+    for m in &mut mean {
+        *m /= n;
     }
     for f in train {
         for i in 0..7 {
@@ -559,11 +558,19 @@ fn main() -> Result<()> {
     let (train_norm, val_norm, norm_stats) = normalize_features(train_features, val_features);
     println!(
         "Feature means: {:?}",
-        norm_stats.mean.iter().map(|v| format!("{v:.4}")).collect::<Vec<_>>()
+        norm_stats
+            .mean
+            .iter()
+            .map(|v| format!("{v:.4}"))
+            .collect::<Vec<_>>()
     );
     println!(
         "Feature stds:  {:?}",
-        norm_stats.std.iter().map(|v| format!("{v:.4}")).collect::<Vec<_>>()
+        norm_stats
+            .std
+            .iter()
+            .map(|v| format!("{v:.4}"))
+            .collect::<Vec<_>>()
     );
 
     // Save normalization stats alongside model.
@@ -609,7 +616,7 @@ fn main() -> Result<()> {
     // 7. Training loop with shuffling + warm-up + cosine LR schedule.
     let n_train = train_norm.len();
     let batch_size = args.batch_size.min(n_train);
-    let batches_per_epoch = (n_train + batch_size - 1) / batch_size;
+    let batches_per_epoch = n_train.div_ceil(batch_size);
     let total_steps = args.epochs * batches_per_epoch;
     let warmup_steps = batches_per_epoch * 5; // 5 epochs warmup
 
@@ -634,8 +641,7 @@ fn main() -> Result<()> {
             let lr = if step < warmup_steps {
                 args.lr * (step as f64 / warmup_steps as f64)
             } else {
-                let progress =
-                    (step - warmup_steps) as f64 / (total_steps - warmup_steps) as f64;
+                let progress = (step - warmup_steps) as f64 / (total_steps - warmup_steps) as f64;
                 args.lr * 0.5 * (1.0 + (std::f64::consts::PI * progress).cos())
             };
             optimizer.set_learning_rate(lr);

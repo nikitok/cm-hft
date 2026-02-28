@@ -38,7 +38,10 @@ impl NormStats {
     }
 
     /// Apply fixed normalization to a raw feature vector.
-    pub fn normalize(&self, raw: &[f64; MlFeatures::NUM_FEATURES]) -> [f64; MlFeatures::NUM_FEATURES] {
+    pub fn normalize(
+        &self,
+        raw: &[f64; MlFeatures::NUM_FEATURES],
+    ) -> [f64; MlFeatures::NUM_FEATURES] {
         let mut out = [0.0; MlFeatures::NUM_FEATURES];
         for i in 0..MlFeatures::NUM_FEATURES {
             if self.std[i] > 1e-12 {
@@ -75,15 +78,18 @@ impl RunningNormalizer {
     ///
     /// Before `min_samples` are collected, returns the raw values unchanged.
     /// After warm-up, returns `(x - mean) / std` for each feature, clamped to [-5, 5].
-    pub fn normalize(&mut self, raw: &[f64; MlFeatures::NUM_FEATURES]) -> [f64; MlFeatures::NUM_FEATURES] {
+    pub fn normalize(
+        &mut self,
+        raw: &[f64; MlFeatures::NUM_FEATURES],
+    ) -> [f64; MlFeatures::NUM_FEATURES] {
         self.count += 1;
         let n = self.count as f64;
 
         // Welford's online update.
-        for i in 0..MlFeatures::NUM_FEATURES {
-            let delta = raw[i] - self.mean[i];
+        for (i, &r) in raw.iter().enumerate() {
+            let delta = r - self.mean[i];
             self.mean[i] += delta / n;
-            let delta2 = raw[i] - self.mean[i];
+            let delta2 = r - self.mean[i];
             self.m2[i] += delta * delta2;
         }
 
@@ -150,7 +156,10 @@ mod tests {
         let mean_val = 49.5; // approx mean of 0..99
         let out = norm.normalize(&[mean_val; 7]);
         for v in &out {
-            assert!(v.abs() < 0.5, "mean-ish value should have small z-score, got {v}");
+            assert!(
+                v.abs() < 0.5,
+                "mean-ish value should have small z-score, got {v}"
+            );
         }
     }
 
