@@ -1,7 +1,7 @@
 # =============================================================================
 # CM.HFT — Market Data Recorder Docker Image (Rust)
 # =============================================================================
-# Multi-stage build: compile in rust:1.85-slim, run in debian:12-slim.
+# Multi-stage build: compile in rust:1.88-slim, run in debian:12-slim.
 # Debian slim (not distroless) because the entrypoint script needs shell +
 # MinIO client (mc) for uploading recorded data to S3.
 # =============================================================================
@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Build
 # ---------------------------------------------------------------------------
-FROM rust:1.85-slim AS builder
+FROM rust:1.88-slim AS builder
 
 # Install build dependencies for OpenSSL (required by many Rust HTTP crates)
 RUN apt-get update && \
