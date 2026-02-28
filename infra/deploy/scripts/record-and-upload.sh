@@ -19,10 +19,12 @@ set -euo pipefail
 : "${S3_SECRET_KEY:?S3_SECRET_KEY not set}"
 : "${S3_BUCKET:?S3_BUCKET not set}"
 
+RECORD_EXCHANGE="${RECORD_EXCHANGE:-bybit}"
 S3_PREFIX="${S3_PREFIX:-recordings}"
 DATA_DIR="/data"
 
 echo "=== cm-record entrypoint ==="
+echo "  Exchange: ${RECORD_EXCHANGE}"
 echo "  Symbols:  ${RECORD_SYMBOLS}"
 echo "  Duration: ${RECORD_DURATION}"
 echo "  S3:       ${S3_ENDPOINT}/${S3_BUCKET}/${S3_PREFIX}/"
@@ -33,6 +35,7 @@ mc alias set s3 "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --api S3v
 # ── Step 2: Record market data ──
 echo ">>> Starting recording at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 cm-record \
+    --exchange "${RECORD_EXCHANGE}" \
     --symbols "${RECORD_SYMBOLS}" \
     --duration "${RECORD_DURATION}" \
     --output "${DATA_DIR}" \

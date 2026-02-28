@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-record-bybit-config
+  namespace: default
+  labels:
+    app: cm-record
+    exchange: bybit
+data:
+  RECORD_EXCHANGE: "bybit"
+  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT"
+  RECORD_DURATION: "65m"
+  S3_BUCKET: "market-data"
+  S3_PREFIX: "recordings/bybit"
+  S3_ENDPOINT: "https://minio.example.com"

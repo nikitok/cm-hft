@@ -1,10 +1,11 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: cm-record
+  name: cm-record-binance
   namespace: default
   labels:
     app: cm-record
+    exchange: binance
 spec:
   schedule: "0 * * * *"          # Every hour
   concurrencyPolicy: Forbid       # Skip if previous still running
@@ -12,12 +13,13 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 4200  # 1h10m — recording + upload + buffer
+      activeDeadlineSeconds: 4800  # 80m — 65m recording + 15m upload buffer
       backoffLimit: 2
       template:
         metadata:
           labels:
             app: cm-record
+            exchange: binance
         spec:
           restartPolicy: Never
           containers:
@@ -32,7 +34,7 @@ spec:
                   memory: 256Mi
               envFrom:
                 - configMapRef:
-                    name: cm-record-config
+                    name: cm-record-binance-config
                 - secretRef:
                     name: cm-record-s3-credentials
               volumeMounts:
