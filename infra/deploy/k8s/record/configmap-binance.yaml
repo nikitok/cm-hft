@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: cm-record-binance-config
-  namespace: default
+  namespace: cm
   labels:
     app: cm-record
     exchange: binance
 data:
   RECORD_EXCHANGE: "binance"
-  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT"
-  RECORD_DURATION: "65m"
-  S3_BUCKET: "market-data"
+  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT"
+  RECORD_DURATION: "70m"
+  S3_BUCKET: "cm-hft"
   S3_PREFIX: "recordings/binance"
-  S3_ENDPOINT: "https://minio.example.com"
+  S3_ENDPOINT: "https://s3.eu-west-1.amazonaws.com"

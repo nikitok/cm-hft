@@ -62,6 +62,11 @@ struct Args {
     /// Use timestamped filenames: {exchange}_{symbol}_{timestamp}.jsonl.gz
     #[arg(long, default_value_t = false)]
     timestamp: bool,
+
+    /// Align output to the next full UTC hour.
+    /// Events outside [HH:00, HH+1:00) are discarded.
+    #[arg(long, default_value_t = false)]
+    hour_align: bool,
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {
@@ -81,8 +86,24 @@ fn parse_duration(s: &str) -> Result<Duration> {
 }
 
 /// Build the base filename (without extension) for a symbol.
-fn base_filename(exchange: &str, symbol: &str, duration_label: &str, timestamp: bool) -> String {
-    if timestamp {
+///
+/// When `target_hour` is provided (from `--hour-align`), the filename uses the
+/// target hour instead of the actual start time, e.g. `bybit_btcusdt_2026-02-28_16:00`.
+fn base_filename(
+    exchange: &str,
+    symbol: &str,
+    duration_label: &str,
+    timestamp: bool,
+    target_hour: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    if let Some(hour) = target_hour {
+        format!(
+            "{}_{}_{}",
+            exchange,
+            symbol.to_lowercase(),
+            hour.format("%Y-%m-%d_%H:%M")
+        )
+    } else if timestamp {
         let now = chrono::Local::now();
         format!(
             "{}_{}_{}",
@@ -199,6 +220,25 @@ async fn main() -> Result<()> {
     let duration = parse_duration(&args.duration)?;
     let duration_label = &args.duration;
 
+    // Compute hour-aligned target window if requested.
+    let (target_start_ns, target_end_ns, target_hour) = if args.hour_align {
+        use chrono::DurationRound;
+        let now = chrono::Utc::now();
+        let next_hour = (now + chrono::Duration::hours(1))
+            .duration_trunc(chrono::Duration::hours(1))
+            .expect("duration_trunc to full hour");
+        let start_ns = next_hour.timestamp_nanos_opt().expect("timestamp_nanos") as u64;
+        let end_ns = start_ns + 3_600_000_000_000; // +1 hour in nanos
+        tracing::info!(
+            target_hour = %next_hour.format("%Y-%m-%d %H:%M UTC"),
+            "hour-align mode: events outside [{}, +1h) will be discarded",
+            next_hour.format("%H:%M")
+        );
+        (Some(start_ns), Some(end_ns), Some(next_hour))
+    } else {
+        (None, None, None)
+    };
+
     // Create output directory.
     std::fs::create_dir_all(&args.output)?;
 
@@ -219,7 +259,7 @@ async fn main() -> Result<()> {
 
     let mut writers: HashMap<String, SymWriter> = HashMap::new();
     for symbol in &args.symbols {
-        let base = base_filename(&exchange, symbol, duration_label, args.timestamp);
+        let base = base_filename(&exchange, symbol, duration_label, args.timestamp, target_hour);
         let jsonl_path = args.output.join(format!("{}.jsonl", base));
         let gz_path = args.output.join(format!("{}.jsonl.gz", base));
 
@@ -323,10 +363,16 @@ async fn main() -> Result<()> {
                 break;
             }
             Some(book) = book_rx.recv() => {
+                let ts_ns = book.timestamp.as_nanos();
+                if let (Some(start), Some(end)) = (target_start_ns, target_end_ns) {
+                    if ts_ns < start || ts_ns >= end {
+                        continue;
+                    }
+                }
                 let sym = book.symbol.0.clone();
                 if let Some(sw) = writers.get_mut(&sym) {
                     let event = RecordedEvent {
-                        ts_ns: book.timestamp.as_nanos(),
+                        ts_ns,
                         kind: "book",
                         data: serde_json::to_value(&book)?,
                     };
@@ -342,10 +388,16 @@ async fn main() -> Result<()> {
                 }
             }
             Some(trade) = trade_rx.recv() => {
+                let ts_ns = trade.timestamp.as_nanos();
+                if let (Some(start), Some(end)) = (target_start_ns, target_end_ns) {
+                    if ts_ns < start || ts_ns >= end {
+                        continue;
+                    }
+                }
                 let sym = trade.symbol.0.clone();
                 if let Some(sw) = writers.get_mut(&sym) {
                     let event = RecordedEvent {
-                        ts_ns: trade.timestamp.as_nanos(),
+                        ts_ns,
                         kind: "trade",
                         data: serde_json::to_value(&trade)?,
                     };

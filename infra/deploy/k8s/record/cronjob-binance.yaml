@@ -2,18 +2,18 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: cm-record-binance
-  namespace: default
+  namespace: cm
   labels:
     app: cm-record
     exchange: binance
 spec:
-  schedule: "0 * * * *"          # Every hour
+  schedule: "55 * * * *"          # 5 min before the hour (for --hour-align overlap)
   concurrencyPolicy: Forbid       # Skip if previous still running
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 4800  # 80m — 65m recording + 15m upload buffer
+      activeDeadlineSeconds: 5400  # 90m — 70m recording + 20m upload buffer
       backoffLimit: 2
       template:
         metadata:
@@ -24,7 +24,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: recorder
-              image: ghcr.io/OWNER/cm-hft/cm-record:latest  # Update OWNER
+              image: ghcr.io/nikitok/cm-hft/cm-record:e62187d1ded693468c4a2fe5093b52b14223e17c@sha256:b83a0ac93241e64763865529cd50a1e12a29b246cf600ec7eda07a7045cfe66e
               resources:
                 requests:
                   cpu: 100m

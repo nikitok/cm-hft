@@ -39,7 +39,8 @@ cm-record \
     --symbols "${RECORD_SYMBOLS}" \
     --duration "${RECORD_DURATION}" \
     --output "${DATA_DIR}" \
-    --timestamp
+    --timestamp \
+    --hour-align
 echo "<<< Recording finished at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
 # ── Step 3: Compress orphaned .jsonl files (crash recovery) ──

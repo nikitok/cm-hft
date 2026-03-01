@@ -1067,6 +1067,327 @@ fn bench_series() {
     println!();
 }
 
+/// Grid-sweep optimizer using Calmar ratio (PnL / MaxDD) across multiple symbols.
+///
+/// Sweeps 6 adaptive_mm parameters over 3,840 combinations, evaluates on all
+/// discovered symbols, and ranks by average Calmar ratio to find configs that
+/// perform well everywhere without blowing up on any single pair.
+#[test]
+fn bench_optimizer() {
+    let symbols = discover_symbols();
+    if symbols.is_empty() {
+        println!("\n  SKIP: no series data found for optimizer\n");
+        return;
+    }
+
+    // Load events for each symbol upfront.
+    let symbol_data: Vec<(String, Vec<(u64, replay_harness::ReplayEvent)>)> = symbols
+        .iter()
+        .filter_map(|sym| load_series(sym).map(|events| (sym.clone(), events)))
+        .collect();
+    if symbol_data.is_empty() {
+        println!("\n  SKIP: could not load series data\n");
+        return;
+    }
+
+    // ── Parameter grid (6 dimensions, 3840 combos) ──
+    let risk_aversions = [0.1, 0.2, 0.3, 0.5, 1.0];
+    let fill_intensities = [0.5, 1.5, 3.0];
+    let time_horizons = [0.5, 1.0, 2.0, 5.0];
+    let vpin_factors = [0.0, 1.0, 2.0, 4.0];
+    let decay_powers = [0.0, 1.0, 2.0, 3.0];
+    let reduce_boosts = [0.0, 0.25, 0.5, 1.0];
+
+    // Fixed params (not swept).
+    let base_spread_bps = 8.0;
+    let min_spread_bps = 2.0;
+    let order_size = 0.001;
+    let max_position = 0.1;
+
+    let total_combos = risk_aversions.len()
+        * fill_intensities.len()
+        * time_horizons.len()
+        * vpin_factors.len()
+        * decay_powers.len()
+        * reduce_boosts.len();
+
+    struct SymbolMetrics {
+        symbol: String,
+        pnl: f64,
+        max_dd: f64,
+        calmar: f64,
+        fills: usize,
+        max_pos: f64,
+    }
+
+    struct OptimizerResult {
+        gamma: f64,
+        kappa: f64,
+        tau: f64,
+        vpin_f: f64,
+        decay: f64,
+        boost: f64,
+        per_symbol: Vec<SymbolMetrics>,
+        avg_calmar: f64,
+        total_pnl: f64,
+    }
+
+    fn calmar(pnl: f64, max_dd: f64) -> f64 {
+        if max_dd > 0.0 {
+            pnl / max_dd
+        } else if pnl > 0.0 {
+            f64::MAX
+        } else {
+            0.0
+        }
+    }
+
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  GRID OPTIMIZER — adaptive_mm, Calmar ratio objective");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!(
+        "  Symbols: {}",
+        symbol_data
+            .iter()
+            .map(|(s, e)| format!("{} ({} events)", s.to_uppercase(), e.len()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "  Grid: {} combos × {} symbols = {} runs",
+        total_combos,
+        symbol_data.len(),
+        total_combos * symbol_data.len()
+    );
+    println!(
+        "  Fixed: base_spread_bps={}, min_spread_bps={}, order_size={}, max_position={}",
+        base_spread_bps, min_spread_bps, order_size, max_position
+    );
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+
+    let sweep_start = std::time::Instant::now();
+    let sim_config = SimConfig::default();
+    let mut results: Vec<OptimizerResult> = Vec::with_capacity(total_combos);
+
+    let mut combo_idx = 0usize;
+    for &gamma in &risk_aversions {
+        for &kappa in &fill_intensities {
+            for &tau in &time_horizons {
+                for &vpin_f in &vpin_factors {
+                    for &decay in &decay_powers {
+                        for &boost in &reduce_boosts {
+                            let params = StrategyParams {
+                                params: serde_json::json!({
+                                    "risk_aversion": gamma,
+                                    "fill_intensity": kappa,
+                                    "time_horizon": tau,
+                                    "vpin_factor": vpin_f,
+                                    "vpin_bucket_size": 50000.0,
+                                    "vpin_n_buckets": 20,
+                                    "size_decay_power": decay,
+                                    "reduce_boost": boost,
+                                    "base_spread_bps": base_spread_bps,
+                                    "min_spread_bps": min_spread_bps,
+                                    "order_size": order_size,
+                                    "max_position": max_position,
+                                }),
+                            };
+
+                            let mut per_symbol = Vec::with_capacity(symbol_data.len());
+                            let mut total_pnl = 0.0;
+                            let mut calmar_sum = 0.0;
+
+                            for (sym, events) in &symbol_data {
+                                let result = run_strategy_on_events(
+                                    "adaptive_mm",
+                                    &params,
+                                    &sym.to_uppercase(),
+                                    events,
+                                    sim_config.clone(),
+                                );
+                                let dd = max_drawdown(&result.pnl_series);
+                                let c = calmar(result.total_pnl, dd);
+                                total_pnl += result.total_pnl;
+                                calmar_sum += c;
+                                per_symbol.push(SymbolMetrics {
+                                    symbol: sym.to_uppercase(),
+                                    pnl: result.total_pnl,
+                                    max_dd: dd,
+                                    calmar: c,
+                                    fills: result.fill_count,
+                                    max_pos: result.max_position,
+                                });
+                            }
+
+                            let avg_calmar = calmar_sum / symbol_data.len() as f64;
+                            results.push(OptimizerResult {
+                                gamma,
+                                kappa,
+                                tau,
+                                vpin_f,
+                                decay,
+                                boost,
+                                per_symbol,
+                                avg_calmar,
+                                total_pnl,
+                            });
+
+                            combo_idx += 1;
+                            if combo_idx.is_multiple_of(500) {
+                                let pct = combo_idx as f64 / total_combos as f64 * 100.0;
+                                println!("  ... {}/{} ({:.0}%)", combo_idx, total_combos, pct);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let sweep_elapsed = sweep_start.elapsed();
+
+    // Sort by avg_calmar descending (treat MAX as very large but finite for sorting).
+    results.sort_by(|a, b| {
+        let ca = if a.avg_calmar == f64::MAX {
+            1e18
+        } else {
+            a.avg_calmar
+        };
+        let cb = if b.avg_calmar == f64::MAX {
+            1e18
+        } else {
+            b.avg_calmar
+        };
+        cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // ── Per-symbol top 10 ──
+    for (sym, _) in &symbol_data {
+        let sym_upper = sym.to_uppercase();
+        let mut by_symbol: Vec<(usize, f64)> = results
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                r.per_symbol
+                    .iter()
+                    .find(|m| m.symbol == sym_upper)
+                    .map(|m| (i, m.calmar))
+            })
+            .collect();
+        by_symbol.sort_by(|a, b| {
+            let ca = if a.1 == f64::MAX { 1e18 } else { a.1 };
+            let cb = if b.1 == f64::MAX { 1e18 } else { b.1 };
+            cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        println!();
+        println!("  ── {} Top 10 by Calmar ──", sym_upper);
+        println!(
+            "  {:>4} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>10} | {:>10} | {:>10} | {:>6}",
+            "Rank", "γ", "κ", "τ", "VPIN", "Decay", "Boost", "PnL $", "Max DD $", "Calmar", "Fills"
+        );
+        println!("  {:-<110}", "");
+
+        for (rank, &(idx, _)) in by_symbol.iter().take(10).enumerate() {
+            let r = &results[idx];
+            let m = r.per_symbol.iter().find(|m| m.symbol == sym_upper).unwrap();
+            let calmar_str = if m.calmar == f64::MAX {
+                "∞".to_string()
+            } else {
+                format!("{:.4}", m.calmar)
+            };
+            println!(
+                "  {:>4} | {:>5.2} | {:>5.1} | {:>5.1} | {:>5.1} | {:>5.1} | {:>5.2} | {:>10.4} | {:>10.4} | {:>10} | {:>6}",
+                rank + 1, r.gamma, r.kappa, r.tau, r.vpin_f, r.decay, r.boost,
+                m.pnl, m.max_dd, calmar_str, m.fills,
+            );
+        }
+    }
+
+    // ── Aggregate top 20 with per-symbol breakdown ──
+    println!();
+    println!("  ══════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  AGGREGATE TOP 20 by average Calmar across all symbols");
+    println!("  ══════════════════════════════════════════════════════════════════════════════════════════════════════════");
+
+    let top_n = 20.min(results.len());
+    for (rank, r) in results.iter().take(top_n).enumerate() {
+        let calmar_str = if r.avg_calmar == f64::MAX {
+            "∞".to_string()
+        } else {
+            format!("{:.4}", r.avg_calmar)
+        };
+        println!();
+        println!(
+            "  #{:<3}  γ={:.2} κ={:.1} τ={:.1} vpin={:.1} decay={:.1} boost={:.2}  |  avg_calmar={} total_pnl=${:.4}",
+            rank + 1, r.gamma, r.kappa, r.tau, r.vpin_f, r.decay, r.boost,
+            calmar_str, r.total_pnl,
+        );
+        println!(
+            "  {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>8}",
+            "Symbol", "PnL $", "Max DD $", "Calmar", "Fills", "Max Pos"
+        );
+        for m in &r.per_symbol {
+            let c_str = if m.calmar == f64::MAX {
+                "∞".to_string()
+            } else {
+                format!("{:.4}", m.calmar)
+            };
+            println!(
+                "  {:>10} | {:>10.4} | {:>10.4} | {:>10} | {:>6} | {:>8.6}",
+                m.symbol, m.pnl, m.max_dd, c_str, m.fills, m.max_pos,
+            );
+        }
+    }
+
+    // ── Bottom 5 (worst configs) ──
+    println!();
+    println!("  ── BOTTOM 5 (worst configs) ──");
+    println!(
+        "  {:>4} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>10} | {:>10}",
+        "Rank", "γ", "κ", "τ", "VPIN", "Decay", "Boost", "Avg Calmar", "Total PnL$"
+    );
+    println!("  {:-<90}", "");
+    let bottom_start = results.len().saturating_sub(5);
+    for (i, r) in results.iter().skip(bottom_start).enumerate() {
+        let calmar_str = if r.avg_calmar == f64::MAX {
+            "∞".to_string()
+        } else {
+            format!("{:.4}", r.avg_calmar)
+        };
+        println!(
+            "  {:>4} | {:>5.2} | {:>5.1} | {:>5.1} | {:>5.1} | {:>5.1} | {:>5.2} | {:>10} | {:>10.4}",
+            bottom_start + i + 1, r.gamma, r.kappa, r.tau, r.vpin_f, r.decay, r.boost,
+            calmar_str, r.total_pnl,
+        );
+    }
+
+    // ── Summary ──
+    let best_calmar = results.first().map(|r| r.avg_calmar).unwrap_or(0.0);
+    let worst_calmar = results.last().map(|r| r.avg_calmar).unwrap_or(0.0);
+    let best_str = if best_calmar == f64::MAX {
+        "∞".to_string()
+    } else {
+        format!("{:.4}", best_calmar)
+    };
+    let worst_str = if worst_calmar == f64::MAX {
+        "∞".to_string()
+    } else {
+        format!("{:.4}", worst_calmar)
+    };
+
+    println!();
+    println!("  ══════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  Total configs:  {}", results.len());
+    println!("  Symbols:        {}", symbol_data.len());
+    println!("  Runtime:        {:.1?}", sweep_elapsed);
+    println!("  Best avg Calmar:  {}", best_str);
+    println!("  Worst avg Calmar: {}", worst_str);
+    println!("  ══════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+}
+
 /// Sim realism comparison: demonstrates fill count reduction with queue model.
 #[test]
 fn bench_sim_realism() {
