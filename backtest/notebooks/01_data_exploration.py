@@ -3,8 +3,6 @@
 # Load Parquet data and explore price, spread, volume, book depth.
 
 # %%
-import polars as pl
-from pathlib import Path
 
 # Load sample data
 # data_path = Path("data/BTCUSDT/binance/")

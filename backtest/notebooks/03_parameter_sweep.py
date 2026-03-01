@@ -3,10 +3,11 @@
 # Sweep strategy parameters and visualize as a heatmap.
 
 # %%
-from backtest.engine.orchestrator import BacktestOrchestrator, BacktestParams
-from backtest.engine.analytics import MetricsCalculator
+
 import numpy as np
-import itertools
+
+from backtest.engine.analytics import MetricsCalculator
+from backtest.engine.orchestrator import BacktestOrchestrator, BacktestParams
 
 # %%
 orch = BacktestOrchestrator()

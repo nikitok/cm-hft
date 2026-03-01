@@ -5,24 +5,23 @@ import json
 import numpy as np
 import polars as pl
 import pytest
-from pathlib import Path
 
-from backtest.engine.orchestrator import (
-    BacktestOrchestrator,
-    BacktestParams,
-    BacktestResult,
-)
 from backtest.engine.analytics import (
     MetricsCalculator,
     PerformanceMetrics,
     ReportGenerator,
     compare_results,
 )
-
+from backtest.engine.orchestrator import (
+    BacktestOrchestrator,
+    BacktestParams,
+    BacktestResult,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def orchestrator(tmp_path):
@@ -46,10 +45,34 @@ def sample_result(orchestrator, default_params):
 def sample_trades():
     """Sample trade list for analytics tests."""
     return [
-        {"timestamp_ns": 1_000_000, "side": "buy", "price": 50000.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 3_000_000, "side": "sell", "price": 50010.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 5_000_000, "side": "buy", "price": 50020.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 8_000_000, "side": "sell", "price": 50005.0, "quantity": 0.001, "fee": 0.005},
+        {
+            "timestamp_ns": 1_000_000,
+            "side": "buy",
+            "price": 50000.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 3_000_000,
+            "side": "sell",
+            "price": 50010.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 5_000_000,
+            "side": "buy",
+            "price": 50020.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 8_000_000,
+            "side": "sell",
+            "price": 50005.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
     ]
 
 
@@ -68,6 +91,7 @@ def trades_with_pnl():
 # ---------------------------------------------------------------------------
 # TestBacktestOrchestrator
 # ---------------------------------------------------------------------------
+
 
 class TestBacktestOrchestrator:
     def test_run_single_python_sim(self, orchestrator):
@@ -185,6 +209,7 @@ class TestBacktestOrchestrator:
 # ---------------------------------------------------------------------------
 # TestMetricsCalculator
 # ---------------------------------------------------------------------------
+
 
 class TestMetricsCalculator:
     def test_sharpe_ratio_positive(self):
@@ -324,6 +349,7 @@ class TestMetricsCalculator:
 # TestReportGenerator
 # ---------------------------------------------------------------------------
 
+
 class TestReportGenerator:
     def test_equity_curve_svg(self, tmp_path):
         """Equity curve SVG contains expected elements."""
@@ -407,6 +433,7 @@ class TestReportGenerator:
 # ---------------------------------------------------------------------------
 # TestCompareResults
 # ---------------------------------------------------------------------------
+
 
 class TestCompareResults:
     def test_compare_produces_dataframe(self, orchestrator):

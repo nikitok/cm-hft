@@ -3,20 +3,16 @@
 import json
 from pathlib import Path
 
-import numpy as np
-import pytest
-
-from backtest.engine.walk_forward import (
-    WalkForwardOptimizer,
-    WalkForwardResult,
-    WalkForwardWindow,
-)
 from backtest.engine.latency_analysis import (
     LatencyAnalyzer,
     LatencyPoint,
     LatencySensitivityResult,
 )
-
+from backtest.engine.walk_forward import (
+    WalkForwardOptimizer,
+    WalkForwardResult,
+    WalkForwardWindow,
+)
 
 # ---------------------------------------------------------------------------
 # Walk-Forward tests
@@ -121,10 +117,16 @@ class TestWalkForward:
         """Summary returns all expected keys with correct types."""
         windows = [
             WalkForwardWindow(
-                0, 0, 100, 100, 200,
+                0,
+                0,
+                100,
+                100,
+                200,
                 best_params={"spread_bps": 5.0},
-                is_sharpe=1.5, oos_sharpe=0.8,
-                is_pnl=100.0, oos_pnl=50.0,
+                is_sharpe=1.5,
+                oos_sharpe=0.8,
+                is_pnl=100.0,
+                oos_pnl=50.0,
             ),
         ]
         result = WalkForwardResult(
@@ -143,9 +145,14 @@ class TestWalkForward:
         """Result serializes to valid JSON."""
         windows = [
             WalkForwardWindow(
-                0, 0, 100, 100, 200,
+                0,
+                0,
+                100,
+                100,
+                200,
                 best_params={"spread_bps": 5.0},
-                is_sharpe=1.5, oos_sharpe=0.8,
+                is_sharpe=1.5,
+                oos_sharpe=0.8,
             ),
         ]
         result = WalkForwardResult(
@@ -162,9 +169,7 @@ class TestWalkForward:
         windows = [
             WalkForwardWindow(0, 0, 100, 100, 200, best_params={"a": 1}),
         ]
-        result = WalkForwardResult(
-            windows=windows, param_grid={"a": [1]}, strategy="test"
-        )
+        result = WalkForwardResult(windows=windows, param_grid={"a": [1]}, strategy="test")
         out = tmp_path / "wf_result.json"
         result.save(out)
         assert out.exists()
@@ -201,9 +206,7 @@ class TestLatencyAnalysis:
     def test_analyze_runs(self) -> None:
         """Analysis completes and returns correct number of points."""
         la = LatencyAnalyzer(num_events=500)
-        result = la.analyze(
-            "market_making", {"spread_bps": 5.0}, latencies_ms=[0, 1, 5]
-        )
+        result = la.analyze("market_making", {"spread_bps": 5.0}, latencies_ms=[0, 1, 5])
         assert len(result.points) == 3
         assert result.points[0].latency_ms == 0
         assert result.points[1].latency_ms == 1
@@ -212,9 +215,7 @@ class TestLatencyAnalysis:
     def test_analyze_latency_ns_conversion(self) -> None:
         """Latency ms is correctly converted to ns in each point."""
         la = LatencyAnalyzer(num_events=500)
-        result = la.analyze(
-            "market_making", {"spread_bps": 5.0}, latencies_ms=[0, 0.5, 2]
-        )
+        result = la.analyze("market_making", {"spread_bps": 5.0}, latencies_ms=[0, 0.5, 2])
         assert result.points[0].latency_ns == 0
         assert result.points[1].latency_ns == 500_000
         assert result.points[2].latency_ns == 2_000_000
@@ -228,9 +229,30 @@ class TestLatencyAnalysis:
     def test_sensitivity_coefficient(self) -> None:
         """Sensitivity coefficient is computed for a simple linear case."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
-            LatencyPoint(latency_ms=5, latency_ns=5_000_000, total_pnl=50.0, sharpe_ratio=0.5, fill_count=8, trade_count=4),
-            LatencyPoint(latency_ms=10, latency_ns=10_000_000, total_pnl=0.0, sharpe_ratio=0.0, fill_count=6, trade_count=3),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
+            LatencyPoint(
+                latency_ms=5,
+                latency_ns=5_000_000,
+                total_pnl=50.0,
+                sharpe_ratio=0.5,
+                fill_count=8,
+                trade_count=4,
+            ),
+            LatencyPoint(
+                latency_ms=10,
+                latency_ns=10_000_000,
+                total_pnl=0.0,
+                sharpe_ratio=0.0,
+                fill_count=6,
+                trade_count=3,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         # Linear decrease: 100 -> 50 -> 0 over 0 -> 5 -> 10ms. Slope = -10.0
@@ -239,7 +261,14 @@ class TestLatencyAnalysis:
     def test_sensitivity_coefficient_single_point(self) -> None:
         """Sensitivity coefficient is 0 with fewer than 2 points."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         assert result.sensitivity_coefficient == 0.0
@@ -247,8 +276,22 @@ class TestLatencyAnalysis:
     def test_is_latency_sensitive_true(self) -> None:
         """Strategy flagged as latency-sensitive when PnL drops >50% at 10ms."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
-            LatencyPoint(latency_ms=10, latency_ns=10_000_000, total_pnl=30.0, sharpe_ratio=0.3, fill_count=6, trade_count=3),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
+            LatencyPoint(
+                latency_ms=10,
+                latency_ns=10_000_000,
+                total_pnl=30.0,
+                sharpe_ratio=0.3,
+                fill_count=6,
+                trade_count=3,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         # 30/100 = 0.3 < 0.5 -> sensitive
@@ -257,8 +300,22 @@ class TestLatencyAnalysis:
     def test_is_latency_sensitive_false(self) -> None:
         """Strategy not flagged when PnL only drops slightly."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
-            LatencyPoint(latency_ms=10, latency_ns=10_000_000, total_pnl=80.0, sharpe_ratio=0.8, fill_count=9, trade_count=5),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
+            LatencyPoint(
+                latency_ms=10,
+                latency_ns=10_000_000,
+                total_pnl=80.0,
+                sharpe_ratio=0.8,
+                fill_count=9,
+                trade_count=5,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         # 80/100 = 0.8 >= 0.5 -> not sensitive
@@ -267,8 +324,22 @@ class TestLatencyAnalysis:
     def test_is_latency_sensitive_missing_points(self) -> None:
         """Not flagged as sensitive when 0ms or 10ms point is missing."""
         points = [
-            LatencyPoint(latency_ms=1, latency_ns=1_000_000, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
-            LatencyPoint(latency_ms=5, latency_ns=5_000_000, total_pnl=50.0, sharpe_ratio=0.5, fill_count=8, trade_count=4),
+            LatencyPoint(
+                latency_ms=1,
+                latency_ns=1_000_000,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
+            LatencyPoint(
+                latency_ms=5,
+                latency_ns=5_000_000,
+                total_pnl=50.0,
+                sharpe_ratio=0.5,
+                fill_count=8,
+                trade_count=4,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         assert result.is_latency_sensitive is False
@@ -276,7 +347,14 @@ class TestLatencyAnalysis:
     def test_summary_has_expected_keys(self) -> None:
         """Summary dict contains all expected fields."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={"a": 1}, points=points)
         summary = result.summary()
@@ -290,7 +368,14 @@ class TestLatencyAnalysis:
     def test_save(self, tmp_path: Path) -> None:
         """Result saves to JSON file."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=1.0, fill_count=10, trade_count=5),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=1.0,
+                fill_count=10,
+                trade_count=5,
+            ),
         ]
         result = LatencySensitivityResult(strategy="test", params={}, points=points)
         out = tmp_path / "latency_result.json"

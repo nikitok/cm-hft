@@ -3,9 +3,10 @@
 # Run a single backtest with fixed parameters and analyze the results.
 
 # %%
-from backtest.engine.orchestrator import BacktestOrchestrator, BacktestParams
-from backtest.engine.analytics import MetricsCalculator
 import numpy as np
+
+from backtest.engine.analytics import MetricsCalculator
+from backtest.engine.orchestrator import BacktestOrchestrator, BacktestParams
 
 # %%
 orch = BacktestOrchestrator()

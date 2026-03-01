@@ -166,8 +166,6 @@ class LatencyAnalyzer:
                     trade_count=result.trade_count,
                 )
             )
-            logger.info(
-                "Latency %.1fms: PnL=%.2f, Sharpe=%.2f", lat_ms, result.total_pnl, sharpe
-            )
+            logger.info("Latency %.1fms: PnL=%.2f, Sharpe=%.2f", lat_ms, result.total_pnl, sharpe)
 
         return LatencySensitivityResult(strategy=strategy, params=params, points=points)

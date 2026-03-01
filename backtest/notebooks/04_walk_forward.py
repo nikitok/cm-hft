@@ -27,8 +27,10 @@ for key, val in summary.items():
 
 # %%
 for w in result.windows:
-    print(f"Window {w.window_id}: IS Sharpe={w.is_sharpe:.3f}, OOS Sharpe={w.oos_sharpe:.3f}, "
-          f"params={w.best_params}")
+    print(
+        f"Window {w.window_id}: IS Sharpe={w.is_sharpe:.3f}, OOS Sharpe={w.oos_sharpe:.3f}, "
+        f"params={w.best_params}"
+    )
 
 # %% [markdown]
 # ## Overfitting Check

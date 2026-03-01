@@ -206,11 +206,9 @@ class WalkForwardOptimizer:
             values = list(param_grid.values())
 
             for combo in itertools.product(*values):
-                params_dict = {**(base_params or {}), **dict(zip(keys, combo))}
+                params_dict = {**(base_params or {}), **dict(zip(keys, combo, strict=True))}
                 bp = BacktestParams(strategy=strategy, params=params_dict)
-                result = orch.run_single(
-                    bp, num_events=window.is_end_event - window.is_start_event
-                )
+                result = orch.run_single(bp, num_events=window.is_end_event - window.is_start_event)
 
                 if len(result.pnl_series) > 1:
                     returns = np.diff(result.pnl_series)

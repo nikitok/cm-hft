@@ -197,9 +197,7 @@ class BacktestOrchestrator:
         config.latency_ns = params.latency_ns
 
         start = time.perf_counter()
-        result = cm_pybridge.run_backtest_synthetic(
-            config, num_events, initial_price, volatility
-        )
+        result = cm_pybridge.run_backtest_synthetic(config, num_events, initial_price, volatility)
         duration = time.perf_counter() - start
 
         # Convert trade records from Rust objects to dicts
@@ -360,14 +358,14 @@ class BacktestOrchestrator:
         for combo in combos:
             p = BacktestParams(
                 strategy=base_params.strategy,
-                params={**base_params.params, **dict(zip(keys, combo))},
+                params={**base_params.params, **dict(zip(keys, combo, strict=True))},
                 maker_fee=base_params.maker_fee,
                 taker_fee=base_params.taker_fee,
                 latency_ns=base_params.latency_ns,
             )
             result = self.run_single(p, num_events=num_events)
             results.append(result)
-            logger.info(f"Sweep {dict(zip(keys, combo))}: PnL={result.total_pnl:.2f}")
+            logger.info(f"Sweep {dict(zip(keys, combo, strict=True))}: PnL={result.total_pnl:.2f}")
 
         return results
 

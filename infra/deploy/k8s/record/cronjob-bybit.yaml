@@ -8,7 +8,7 @@ metadata:
     exchange: bybit
 spec:
   schedule: "55 * * * *"          # 5 min before the hour (for --hour-align overlap)
-  concurrencyPolicy: Forbid       # Skip if previous still running
+  concurrencyPolicy: Allow         # Previous job may still be uploading
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -24,7 +24,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: recorder
-              image: ghcr.io/nikitok/cm-hft/cm-record:e62187d1ded693468c4a2fe5093b52b14223e17c@sha256:b83a0ac93241e64763865529cd50a1e12a29b246cf600ec7eda07a7045cfe66e
+              image: ghcr.io/nikitok/cm-hft/cm-record:390754a537d88990fe553567798d1c686e705b8c@sha256:a8112fcd609f4b0fd8ca9a16746750f1a68e4bdf008938cdac4e4f5d026f6064
               resources:
                 requests:
                   cpu: 100m

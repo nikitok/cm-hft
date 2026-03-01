@@ -4,11 +4,9 @@ Computes standard trading performance metrics and generates
 visual reports for backtest analysis.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -80,10 +78,7 @@ class MetricsCalculator:
         arr = np.array(pnl_series) if pnl_series else np.array([0.0])
 
         # PnL returns (differences)
-        if len(arr) > 1:
-            returns = np.diff(arr)
-        else:
-            returns = np.array([0.0])
+        returns = np.diff(arr) if len(arr) > 1 else np.array([0.0])
 
         total_pnl = float(arr[-1]) if len(arr) > 0 else 0.0
         initial_value = float(arr[0]) if len(arr) > 0 and arr[0] != 0 else 1.0
@@ -147,7 +142,11 @@ class MetricsCalculator:
                 buys.append(t)
             elif t.get("side") == "sell" and buys:
                 buy = buys.pop(0)
-                trade_pnl = (t["price"] - buy["price"]) * t["quantity"] - t.get("fee", 0) - buy.get("fee", 0)
+                trade_pnl = (
+                    (t["price"] - buy["price"]) * t["quantity"]
+                    - t.get("fee", 0)
+                    - buy.get("fee", 0)
+                )
                 pnls.append(trade_pnl)
 
         return pnls
@@ -334,7 +333,9 @@ class ReportGenerator:
 <title>Backtest Report: {name}</title>
 <style>
   body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
-  .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+  .container {{ max-width: 900px; margin: 0 auto;
+    background: white; padding: 30px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
   h1 {{ color: #333; border-bottom: 2px solid #2196F3; padding-bottom: 10px; }}
   h2 {{ color: #555; margin-top: 30px; }}
   table {{ border-collapse: collapse; width: 100%; margin: 15px 0; }}
@@ -343,7 +344,9 @@ class ReportGenerator:
   .positive {{ color: #4CAF50; }}
   .negative {{ color: #f44336; }}
   .chart {{ margin: 20px 0; text-align: center; }}
-  .params {{ background: #f9f9f9; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 13px; }}
+  .params {{ background: #f9f9f9; padding: 15px;
+    border-radius: 4px; font-family: monospace;
+    font-size: 13px; }}
 </style>
 </head>
 <body>
@@ -426,7 +429,9 @@ class ReportGenerator:
 <title>Sweep Report: {name}</title>
 <style>
   body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
-  .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+  .container {{ max-width: 1000px; margin: 0 auto;
+    background: white; padding: 30px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
   h1 {{ color: #333; border-bottom: 2px solid #FF9800; padding-bottom: 10px; }}
   table {{ border-collapse: collapse; width: 100%; margin: 15px 0; }}
   th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #ddd; }}
@@ -465,7 +470,11 @@ class ReportGenerator:
             SVG markup string.
         """
         if not pnl_series or len(pnl_series) < 2:
-            return '<svg width="800" height="300"><text x="400" y="150" text-anchor="middle" fill="#999">No data</text></svg>'
+            return (
+                '<svg width="800" height="300">'
+                '<text x="400" y="150" text-anchor="middle"'
+                ' fill="#999">No data</text></svg>'
+            )
 
         padding = 50
         plot_w = width - 2 * padding
@@ -488,24 +497,50 @@ class ReportGenerator:
         zero_y = padding + plot_h - ((0 - min_val) / val_range) * plot_h
         zero_line = ""
         if min_val <= 0 <= max_val:
-            zero_line = f'<line x1="{padding}" y1="{zero_y:.1f}" x2="{width - padding}" y2="{zero_y:.1f}" stroke="#ccc" stroke-dasharray="4"/>'
+            zero_line = (
+                f'<line x1="{padding}" y1="{zero_y:.1f}"'
+                f' x2="{width - padding}" y2="{zero_y:.1f}"'
+                f' stroke="#ccc" stroke-dasharray="4"/>'
+            )
 
         color = "#4CAF50" if pnl_series[-1] >= 0 else "#f44336"
 
-        return f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
-  <rect width="{width}" height="{height}" fill="white" rx="4"/>
-  {zero_line}
-  <polyline points="{polyline}" fill="none" stroke="{color}" stroke-width="1.5"/>
-  <text x="{padding}" y="{padding - 10}" font-size="12" fill="#666">PnL: {pnl_series[-1]:.6f}</text>
-  <text x="{padding}" y="{height - 10}" font-size="11" fill="#999">0</text>
-  <text x="{width - padding}" y="{height - 10}" font-size="11" fill="#999" text-anchor="end">{n} ticks</text>
-  <text x="{padding - 5}" y="{padding + 5}" font-size="10" fill="#999" text-anchor="end">{max_val:.6f}</text>
-  <text x="{padding - 5}" y="{padding + plot_h}" font-size="10" fill="#999" text-anchor="end">{min_val:.6f}</text>
-</svg>"""
+        pnl_label = f"PnL: {pnl_series[-1]:.6f}"
+        ticks_label = f"{n} ticks"
+        max_label = f"{max_val:.6f}"
+        min_label = f"{min_val:.6f}"
 
-    def _drawdown_svg(
-        self, pnl_series: list[float], width: int = 800, height: int = 200
-    ) -> str:
+        return (
+            f'<svg width="{width}" height="{height}"'
+            f' xmlns="http://www.w3.org/2000/svg">\n'
+            f'  <rect width="{width}" height="{height}"'
+            f' fill="white" rx="4"/>\n'
+            f"  {zero_line}\n"
+            f'  <polyline points="{polyline}"'
+            f' fill="none" stroke="{color}"'
+            f' stroke-width="1.5"/>\n'
+            f'  <text x="{padding}"'
+            f' y="{padding - 10}" font-size="12"'
+            f' fill="#666">{pnl_label}</text>\n'
+            f'  <text x="{padding}"'
+            f' y="{height - 10}" font-size="11"'
+            f' fill="#999">0</text>\n'
+            f'  <text x="{width - padding}"'
+            f' y="{height - 10}" font-size="11"'
+            f' fill="#999" text-anchor="end">'
+            f"{ticks_label}</text>\n"
+            f'  <text x="{padding - 5}"'
+            f' y="{padding + 5}" font-size="10"'
+            f' fill="#999" text-anchor="end">'
+            f"{max_label}</text>\n"
+            f'  <text x="{padding - 5}"'
+            f' y="{padding + plot_h}" font-size="10"'
+            f' fill="#999" text-anchor="end">'
+            f"{min_label}</text>\n"
+            f"</svg>"
+        )
+
+    def _drawdown_svg(self, pnl_series: list[float], width: int = 800, height: int = 200) -> str:
         """Generate inline SVG for drawdown chart.
 
         Args:
@@ -517,7 +552,11 @@ class ReportGenerator:
             SVG markup string.
         """
         if not pnl_series or len(pnl_series) < 2:
-            return f'<svg width="{width}" height="{height}"><text x="400" y="100" text-anchor="middle" fill="#999">No data</text></svg>'
+            return (
+                f'<svg width="{width}" height="{height}">'
+                f'<text x="400" y="100" text-anchor="middle"'
+                f' fill="#999">No data</text></svg>'
+            )
 
         padding = 50
         plot_w = width - 2 * padding
@@ -541,13 +580,29 @@ class ReportGenerator:
 
         polyline = " ".join(points)
 
-        return f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
-  <rect width="{width}" height="{height}" fill="white" rx="4"/>
-  <polygon points="{polyline}" fill="rgba(244,67,54,0.2)" stroke="#f44336" stroke-width="1"/>
-  <text x="{padding}" y="{padding - 10}" font-size="12" fill="#666">Max Drawdown: {float(np.max(drawdowns)):.6f}</text>
-  <text x="{padding - 5}" y="{padding + 5}" font-size="10" fill="#999" text-anchor="end">0</text>
-  <text x="{padding - 5}" y="{padding + plot_h}" font-size="10" fill="#999" text-anchor="end">{float(np.max(drawdowns)):.6f}</text>
-</svg>"""
+        dd_label = f"Max Drawdown: {float(np.max(drawdowns)):.6f}"
+        dd_val = f"{float(np.max(drawdowns)):.6f}"
+
+        return (
+            f'<svg width="{width}" height="{height}"'
+            f' xmlns="http://www.w3.org/2000/svg">\n'
+            f'  <rect width="{width}" height="{height}"'
+            f' fill="white" rx="4"/>\n'
+            f'  <polygon points="{polyline}"'
+            f' fill="rgba(244,67,54,0.2)"'
+            f' stroke="#f44336" stroke-width="1"/>\n'
+            f'  <text x="{padding}"'
+            f' y="{padding - 10}" font-size="12"'
+            f' fill="#666">{dd_label}</text>\n'
+            f'  <text x="{padding - 5}"'
+            f' y="{padding + 5}" font-size="10"'
+            f' fill="#999" text-anchor="end">0</text>\n'
+            f'  <text x="{padding - 5}"'
+            f' y="{padding + plot_h}" font-size="10"'
+            f' fill="#999" text-anchor="end">'
+            f"{dd_val}</text>\n"
+            f"</svg>"
+        )
 
     def _metrics_html(self, metrics: PerformanceMetrics) -> str:
         """Generate HTML table of performance metrics.
@@ -558,6 +613,7 @@ class ReportGenerator:
         Returns:
             HTML table string.
         """
+
         def _fmt(val: float, fmt: str = ".4f", is_pct: bool = False) -> str:
             """Format a value with color class."""
             suffix = "%" if is_pct else ""
@@ -572,15 +628,15 @@ class ReportGenerator:
   <tr><th>Metric</th><th>Value</th></tr>
   <tr><td>Total PnL</td><td>{_fmt(metrics.total_pnl)}</td></tr>
   <tr><td>Net PnL (after fees)</td><td>{_fmt(metrics.net_pnl)}</td></tr>
-  <tr><td>Total Return</td><td>{_fmt(metrics.total_return_pct, '.2f', True)}</td></tr>
-  <tr><td>Sharpe Ratio</td><td>{_fmt(metrics.sharpe_ratio, '.2f')}</td></tr>
+  <tr><td>Total Return</td><td>{_fmt(metrics.total_return_pct, ".2f", True)}</td></tr>
+  <tr><td>Sharpe Ratio</td><td>{_fmt(metrics.sharpe_ratio, ".2f")}</td></tr>
   <tr><td>Sortino Ratio</td><td>{metrics.sortino_ratio:.2f}</td></tr>
   <tr><td>Max Drawdown</td><td>{metrics.max_drawdown:.6f}</td></tr>
   <tr><td>Max Drawdown %</td><td>{metrics.max_drawdown_pct:.2f}%</td></tr>
   <tr><td>Profit Factor</td><td>{metrics.profit_factor:.2f}</td></tr>
   <tr><td>Win Rate</td><td>{metrics.win_rate:.1%}</td></tr>
-  <tr><td>Avg Win</td><td>{_fmt(metrics.avg_win, '.6f')}</td></tr>
-  <tr><td>Avg Loss</td><td>{_fmt(metrics.avg_loss, '.6f')}</td></tr>
+  <tr><td>Avg Win</td><td>{_fmt(metrics.avg_win, ".6f")}</td></tr>
+  <tr><td>Avg Loss</td><td>{_fmt(metrics.avg_loss, ".6f")}</td></tr>
   <tr><td>Trade Count</td><td>{metrics.trade_count}</td></tr>
   <tr><td>Avg Trade Duration</td><td>{metrics.avg_trade_duration_ms:.1f} ms</td></tr>
   <tr><td>Total Fees</td><td>{metrics.total_fees:.6f}</td></tr>
@@ -601,7 +657,7 @@ class ReportGenerator:
 
 def compare_results(
     results: list,
-    labels: Optional[list[str]] = None,
+    labels: list[str] | None = None,
 ) -> pl.DataFrame:
     """Compare multiple backtest results side by side.
 

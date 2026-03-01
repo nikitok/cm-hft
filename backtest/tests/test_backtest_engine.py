@@ -2,13 +2,13 @@
 
 Covers:
   - backtest.engine.orchestrator: BacktestParams, BacktestResult, BacktestOrchestrator
-  - backtest.engine.analytics: MetricsCalculator, PerformanceMetrics, ReportGenerator, compare_results
+  - backtest.engine.analytics: MetricsCalculator, PerformanceMetrics,
+    ReportGenerator, compare_results
   - backtest.engine.walk_forward: WalkForwardOptimizer, WalkForwardWindow, WalkForwardResult
   - backtest.engine.latency_analysis: LatencyAnalyzer, LatencyPoint, LatencySensitivityResult
 """
 
 import json
-from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -35,7 +35,6 @@ from backtest.engine.walk_forward import (
     WalkForwardResult,
     WalkForwardWindow,
 )
-
 
 # ===========================================================================
 # Fixtures
@@ -64,10 +63,34 @@ def sample_result(orchestrator, default_params):
 def sample_trades():
     """Four trades forming two buy/sell pairs."""
     return [
-        {"timestamp_ns": 1_000_000, "side": "buy", "price": 50_000.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 3_000_000, "side": "sell", "price": 50_010.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 5_000_000, "side": "buy", "price": 50_020.0, "quantity": 0.001, "fee": 0.005},
-        {"timestamp_ns": 8_000_000, "side": "sell", "price": 50_005.0, "quantity": 0.001, "fee": 0.005},
+        {
+            "timestamp_ns": 1_000_000,
+            "side": "buy",
+            "price": 50_000.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 3_000_000,
+            "side": "sell",
+            "price": 50_010.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 5_000_000,
+            "side": "buy",
+            "price": 50_020.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
+        {
+            "timestamp_ns": 8_000_000,
+            "side": "sell",
+            "price": 50_005.0,
+            "quantity": 0.001,
+            "fee": 0.005,
+        },
     ]
 
 
@@ -128,9 +151,17 @@ class TestBacktestResult:
         """to_dict() returns all expected top-level keys."""
         d = sample_result.to_dict()
         expected_keys = {
-            "strategy", "params", "maker_fee", "taker_fee", "latency_ns",
-            "total_pnl", "total_fees", "trade_count", "fill_count",
-            "max_position", "duration_seconds",
+            "strategy",
+            "params",
+            "maker_fee",
+            "taker_fee",
+            "latency_ns",
+            "total_pnl",
+            "total_fees",
+            "trade_count",
+            "fill_count",
+            "max_position",
+            "duration_seconds",
         }
         assert expected_keys == set(d.keys())
 
@@ -529,7 +560,12 @@ class TestWalkForwardOptimize:
             param_grid={"spread_bps": [3.0, 5.0]},
             is_size=2000,
             oos_size=1000,
-            base_params={"order_size": 0.001, "num_levels": 1, "reprice_threshold_bps": 2.0, "skew_factor": 0.5},
+            base_params={
+                "order_size": 0.001,
+                "num_levels": 1,
+                "reprice_threshold_bps": 2.0,
+                "skew_factor": 0.5,
+            },
         )
         assert isinstance(result, WalkForwardResult)
         assert len(result.windows) > 0
@@ -550,19 +586,27 @@ class TestWalkForwardResult:
         windows = [
             WalkForwardWindow(
                 window_id=0,
-                is_start_event=0, is_end_event=3000,
-                oos_start_event=3000, oos_end_event=4000,
+                is_start_event=0,
+                is_end_event=3000,
+                oos_start_event=3000,
+                oos_end_event=4000,
                 best_params={"spread_bps": 5.0},
-                is_sharpe=2.0, oos_sharpe=1.5,
-                is_pnl=100.0, oos_pnl=60.0,
+                is_sharpe=2.0,
+                oos_sharpe=1.5,
+                is_pnl=100.0,
+                oos_pnl=60.0,
             ),
             WalkForwardWindow(
                 window_id=1,
-                is_start_event=1000, is_end_event=4000,
-                oos_start_event=4000, oos_end_event=5000,
+                is_start_event=1000,
+                is_end_event=4000,
+                oos_start_event=4000,
+                oos_end_event=5000,
                 best_params={"spread_bps": 3.0},
-                is_sharpe=1.8, oos_sharpe=0.9,
-                is_pnl=80.0, oos_pnl=30.0,
+                is_sharpe=1.8,
+                oos_sharpe=0.9,
+                is_pnl=80.0,
+                oos_pnl=30.0,
             ),
         ]
         return WalkForwardResult(
@@ -574,7 +618,13 @@ class TestWalkForwardResult:
     def test_summary_keys(self, wf_result):
         """summary() returns expected keys."""
         s = wf_result.summary()
-        expected = {"num_windows", "avg_is_sharpe", "avg_oos_sharpe", "overfitting_ratio", "total_oos_pnl"}
+        expected = {
+            "num_windows",
+            "avg_is_sharpe",
+            "avg_oos_sharpe",
+            "overfitting_ratio",
+            "total_oos_pnl",
+        }
         assert expected == set(s.keys())
 
     def test_overfitting_ratio(self, wf_result):
@@ -613,8 +663,13 @@ class TestLatencyAnalyzer:
         latencies = [0, 1, 5]
         result = analyzer.analyze(
             strategy="market_making",
-            params={"spread_bps": 5.0, "order_size": 0.001, "num_levels": 1,
-                    "reprice_threshold_bps": 2.0, "skew_factor": 0.5},
+            params={
+                "spread_bps": 5.0,
+                "order_size": 0.001,
+                "num_levels": 1,
+                "reprice_threshold_bps": 2.0,
+                "skew_factor": 0.5,
+            },
             latencies_ms=latencies,
         )
         assert isinstance(result, LatencySensitivityResult)
@@ -634,21 +689,71 @@ class TestLatencySensitivityResult:
     def sensitivity_result_negative_slope(self):
         """PnL decreases with latency (latency-sensitive strategy)."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=100.0, sharpe_ratio=2.0, fill_count=50, trade_count=50),
-            LatencyPoint(latency_ms=5, latency_ns=5_000_000, total_pnl=60.0, sharpe_ratio=1.2, fill_count=40, trade_count=40),
-            LatencyPoint(latency_ms=10, latency_ns=10_000_000, total_pnl=30.0, sharpe_ratio=0.5, fill_count=25, trade_count=25),
-            LatencyPoint(latency_ms=20, latency_ns=20_000_000, total_pnl=10.0, sharpe_ratio=0.1, fill_count=15, trade_count=15),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=100.0,
+                sharpe_ratio=2.0,
+                fill_count=50,
+                trade_count=50,
+            ),
+            LatencyPoint(
+                latency_ms=5,
+                latency_ns=5_000_000,
+                total_pnl=60.0,
+                sharpe_ratio=1.2,
+                fill_count=40,
+                trade_count=40,
+            ),
+            LatencyPoint(
+                latency_ms=10,
+                latency_ns=10_000_000,
+                total_pnl=30.0,
+                sharpe_ratio=0.5,
+                fill_count=25,
+                trade_count=25,
+            ),
+            LatencyPoint(
+                latency_ms=20,
+                latency_ns=20_000_000,
+                total_pnl=10.0,
+                sharpe_ratio=0.1,
+                fill_count=15,
+                trade_count=15,
+            ),
         ]
-        return LatencySensitivityResult(strategy="market_making", params={"spread_bps": 5.0}, points=points)
+        return LatencySensitivityResult(
+            strategy="market_making",
+            params={"spread_bps": 5.0},
+            points=points,
+        )
 
     @pytest.fixture
     def sensitivity_result_flat(self):
         """PnL stays roughly constant (not latency-sensitive)."""
         points = [
-            LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=50.0, sharpe_ratio=1.0, fill_count=30, trade_count=30),
-            LatencyPoint(latency_ms=10, latency_ns=10_000_000, total_pnl=48.0, sharpe_ratio=0.95, fill_count=29, trade_count=29),
+            LatencyPoint(
+                latency_ms=0,
+                latency_ns=0,
+                total_pnl=50.0,
+                sharpe_ratio=1.0,
+                fill_count=30,
+                trade_count=30,
+            ),
+            LatencyPoint(
+                latency_ms=10,
+                latency_ns=10_000_000,
+                total_pnl=48.0,
+                sharpe_ratio=0.95,
+                fill_count=29,
+                trade_count=29,
+            ),
         ]
-        return LatencySensitivityResult(strategy="market_making", params={"spread_bps": 5.0}, points=points)
+        return LatencySensitivityResult(
+            strategy="market_making",
+            params={"spread_bps": 5.0},
+            points=points,
+        )
 
     def test_sensitivity_coefficient_negative(self, sensitivity_result_negative_slope):
         """Negative slope when PnL decreases with latency."""
@@ -660,7 +765,16 @@ class TestLatencySensitivityResult:
         result = LatencySensitivityResult(
             strategy="mm",
             params={},
-            points=[LatencyPoint(latency_ms=0, latency_ns=0, total_pnl=50.0, sharpe_ratio=1.0, fill_count=10, trade_count=10)],
+            points=[
+                LatencyPoint(
+                    latency_ms=0,
+                    latency_ns=0,
+                    total_pnl=50.0,
+                    sharpe_ratio=1.0,
+                    fill_count=10,
+                    trade_count=10,
+                )
+            ],
         )
         assert result.sensitivity_coefficient == 0.0
 

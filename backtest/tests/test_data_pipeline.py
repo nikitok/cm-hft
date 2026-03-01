@@ -17,6 +17,7 @@ from backtest.data.validate import DataValidator, ValidationReport, ValidationRe
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_book_df(
     n: int = 100,
     start_us: int = 1_000_000_000_000,
@@ -77,6 +78,7 @@ def _make_trades_df(
 # ---------------------------------------------------------------------------
 # DataValidator tests
 # ---------------------------------------------------------------------------
+
 
 class TestDataValidator:
     """Tests for the DataValidator class."""
@@ -254,6 +256,7 @@ class TestDataValidator:
 # BinanceDownloader tests
 # ---------------------------------------------------------------------------
 
+
 class TestBinanceDownloader:
     """Tests for the BinanceDownloader class."""
 
@@ -283,9 +286,18 @@ class TestBinanceDownloader:
         mock_response.status_code = 200
         mock_response.json.return_value = [
             [
-                1704067200000, "42000.00", "42100.00", "41900.00", "42050.00",
-                "100.5", 1704067259999, "4225000.00", 500,
-                "60.3", "2535000.00", "0",
+                1704067200000,
+                "42000.00",
+                "42100.00",
+                "41900.00",
+                "42050.00",
+                "100.5",
+                1704067259999,
+                "4225000.00",
+                500,
+                "60.3",
+                "2535000.00",
+                "0",
             ]
         ]
         mock_response.raise_for_status = MagicMock()
@@ -352,6 +364,7 @@ class TestBinanceDownloader:
 # BybitDownloader tests
 # ---------------------------------------------------------------------------
 
+
 class TestBybitDownloader:
     """Tests for the BybitDownloader class."""
 
@@ -365,8 +378,13 @@ class TestBybitDownloader:
             "result": {
                 "list": [
                     [
-                        "1704067200000", "42000.00", "42100.00", "41900.00",
-                        "42050.00", "100.5", "4225000.00",
+                        "1704067200000",
+                        "42000.00",
+                        "42100.00",
+                        "41900.00",
+                        "42050.00",
+                        "100.5",
+                        "4225000.00",
                     ],
                 ]
             },
@@ -424,6 +442,7 @@ class TestBybitDownloader:
 # ---------------------------------------------------------------------------
 # QuestDBExporter tests
 # ---------------------------------------------------------------------------
+
 
 class TestQuestDBExporter:
     """Tests for the QuestDBExporter class."""
