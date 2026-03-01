@@ -259,7 +259,13 @@ async fn main() -> Result<()> {
 
     let mut writers: HashMap<String, SymWriter> = HashMap::new();
     for symbol in &args.symbols {
-        let base = base_filename(&exchange, symbol, duration_label, args.timestamp, target_hour);
+        let base = base_filename(
+            &exchange,
+            symbol,
+            duration_label,
+            args.timestamp,
+            target_hour,
+        );
         let jsonl_path = args.output.join(format!("{}.jsonl", base));
         let gz_path = args.output.join(format!("{}.jsonl.gz", base));
 
