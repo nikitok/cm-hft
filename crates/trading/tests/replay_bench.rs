@@ -10,29 +10,52 @@ use replay_harness::{
     find_series_files, load_events, load_events_multi, ReplayTestHarness, SimConfig,
 };
 
-fn data_path(symbol: &str) -> Option<String> {
+/// Type alias for symbol data: (exchange, symbol, events)
+type SymbolData = Vec<(Exchange, String, Vec<(u64, replay_harness::ReplayEvent)>)>;
+
+/// Helper: find data file for a specific exchange and symbol.
+/// Returns (path, exchange) if found.
+fn data_path_for_exchange(exchange: &str, symbol: &str) -> Option<(String, Exchange)> {
     let durations = ["30m", "5m", "3m", "1h"];
+    let exchange_enum = match exchange {
+        "binance" => Exchange::Binance,
+        "bybit" => Exchange::Bybit,
+        _ => return None,
+    };
     for dur in &durations {
         let candidates = [
-            format!("testdata/bybit_{}_{}.jsonl.gz", symbol, dur),
-            format!("../../testdata/bybit_{}_{}.jsonl.gz", symbol, dur),
+            format!("testdata/{}_{}_{}.jsonl.gz", exchange, symbol, dur),
+            format!("../../testdata/{}_{}_{}.jsonl.gz", exchange, symbol, dur),
         ];
         for path in &candidates {
             if Path::new(path).exists() {
-                return Some(path.clone());
+                return Some((path.clone(), exchange_enum));
             }
         }
     }
     None
 }
 
-fn run_and_report(strategy_name: &str, params: &StrategyParams, symbol: &str, path: &str) {
-    run_and_report_with_config(strategy_name, params, symbol, path, SimConfig::default());
+fn data_path(symbol: &str) -> Option<(String, Exchange)> {
+    // Try Bybit first (most test data), then Binance
+    data_path_for_exchange("bybit", symbol)
+        .or_else(|| data_path_for_exchange("binance", symbol))
+}
+
+fn run_and_report(
+    strategy_name: &str,
+    params: &StrategyParams,
+    exchange: Exchange,
+    symbol: &str,
+    path: &str,
+) {
+    run_and_report_with_config(strategy_name, params, exchange, symbol, path, SimConfig::default());
 }
 
 fn run_and_report_with_config(
     strategy_name: &str,
     params: &StrategyParams,
+    exchange: Exchange,
     symbol: &str,
     path: &str,
     sim_config: SimConfig,
@@ -51,7 +74,7 @@ fn run_and_report_with_config(
     let mut harness = ReplayTestHarness::with_config(
         strategy_name,
         params.clone(),
-        Exchange::Bybit,
+        exchange,
         symbol,
         sim_config,
     );
@@ -191,22 +214,26 @@ fn bench_all_strategies() {
 
     println!();
     println!("═══════════════════════════════════════════════════════════");
-    println!("  REPLAY STRATEGY BENCHMARK — real Bybit data");
+    println!("  REPLAY STRATEGY BENCHMARK — real market data");
     println!("═══════════════════════════════════════════════════════════");
     println!();
 
     for sym in &symbols {
-        let path = match data_path(sym) {
+        let (path, exchange) = match data_path(sym) {
             Some(p) => p,
             None => {
                 println!("SKIP: no data for {}", sym.to_uppercase());
                 continue;
             }
         };
+        let exchange_name = match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Bybit => "Bybit",
+        };
 
         for (strategy_name, label, params) in &configs {
-            println!(">>> {} [{}]", strategy_name, label);
-            run_and_report(strategy_name, params, &sym.to_uppercase(), &path);
+            println!(">>> {} [{}] on {}", strategy_name, label, exchange_name);
+            run_and_report(strategy_name, params, exchange, &sym.to_uppercase(), &path);
         }
     }
 }
@@ -290,22 +317,26 @@ fn bench_improvement_stages() {
 
     println!();
     println!("═══════════════════════════════════════════════════════════════════════════════════════════════");
-    println!("  IMPROVEMENT STAGES — adaptive_mm on real Bybit data");
+    println!("  IMPROVEMENT STAGES — adaptive_mm on real market data");
     println!("═══════════════════════════════════════════════════════════════════════════════════════════════");
 
     for sym in &symbols {
-        let path = match data_path(sym) {
+        let (path, exchange) = match data_path(sym) {
             Some(p) => p,
             None => {
                 println!("SKIP: no data for {}", sym.to_uppercase());
                 continue;
             }
         };
+        let exchange_name = match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Bybit => "Bybit",
+        };
 
         let events = load_events(&path).expect("failed to load");
 
         println!();
-        println!("  {} ({} events)", sym.to_uppercase(), events.len());
+        println!("  {} / {} ({} events)", sym.to_uppercase(), exchange_name, events.len());
         println!("  {:-<95}", "");
         println!(
             "  {:>2} | {:<15} | {:>6} | {:>8} | {:>12} | {:>10} | {:>12} | {:>10}",
@@ -320,7 +351,7 @@ fn bench_improvement_stages() {
             let mut harness = ReplayTestHarness::with_config(
                 "adaptive_mm",
                 params,
-                Exchange::Bybit,
+                exchange,
                 &sym.to_uppercase(),
                 sim_config.clone(),
             );
@@ -359,12 +390,16 @@ fn bench_improvement_stages() {
 
 #[test]
 fn bench_diagnostic() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             println!("SKIP: no BTCUSDT data");
             return;
         }
+    };
+    let exchange_name = match exchange {
+        Exchange::Binance => "Binance",
+        Exchange::Bybit => "Bybit",
     };
 
     let events = load_events(&path).expect("failed to load");
@@ -401,7 +436,7 @@ fn bench_diagnostic() {
 
     println!();
     println!("═══════════════════════════════════════════════════════════");
-    println!("  DATA DIAGNOSTIC — BTCUSDT");
+    println!("  DATA DIAGNOSTIC — BTCUSDT / {}", exchange_name);
     println!("═══════════════════════════════════════════════════════════");
     println!("  First mid:  ${:.2}", first);
     println!("  Last mid:   ${:.2}", last);
@@ -434,7 +469,7 @@ fn bench_diagnostic() {
     let mut harness = ReplayTestHarness::with_config(
         "adaptive_mm",
         params,
-        Exchange::Bybit,
+        exchange,
         "BTCUSDT",
         SimConfig::default(),
     );
@@ -464,12 +499,16 @@ fn bench_diagnostic() {
 
 #[test]
 fn bench_param_sweep() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             println!("SKIP: no BTCUSDT data for param sweep");
             return;
         }
+    };
+    let exchange_name = match exchange {
+        Exchange::Binance => "Binance",
+        Exchange::Bybit => "Bybit",
     };
 
     let events = load_events(&path).expect("failed to load");
@@ -496,7 +535,7 @@ fn bench_param_sweep() {
 
     println!();
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  PARAMETER SWEEP — adaptive_mm on BTCUSDT");
+    println!("  PARAMETER SWEEP — adaptive_mm on BTCUSDT / {}", exchange_name);
     println!(
         "  {} combinations",
         risk_aversions.len()
@@ -529,7 +568,7 @@ fn bench_param_sweep() {
                         let mut harness = ReplayTestHarness::with_config(
                             "adaptive_mm",
                             params,
-                            Exchange::Bybit,
+                            exchange,
                             "BTCUSDT",
                             SimConfig::default(),
                         );
@@ -602,11 +641,11 @@ fn bench_param_sweep() {
     println!();
 }
 
-/// Helper: load series events for a symbol, returns None if no files found.
-fn load_series(sym: &str) -> Option<Vec<(u64, replay_harness::ReplayEvent)>> {
+/// Helper: load series events for a symbol and exchange, returns None if no files found.
+fn load_series(exchange: &str, sym: &str) -> Option<Vec<(u64, replay_harness::ReplayEvent)>> {
     let data_dirs = ["testdata", "../../testdata"];
     for dir in &data_dirs {
-        let files = find_series_files(dir, sym);
+        let files = find_series_files(dir, exchange, sym);
         if !files.is_empty() {
             let events = load_events_multi(&files).expect("failed to load series");
             return Some(events);
@@ -615,24 +654,38 @@ fn load_series(sym: &str) -> Option<Vec<(u64, replay_harness::ReplayEvent)>> {
     None
 }
 
-/// Discover all symbols with series data in testdata/.
-/// Looks for timestamped files matching `bybit_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz`.
-fn discover_symbols() -> Vec<String> {
+/// Discover all (exchange, symbol) pairs with series data in testdata/.
+/// Looks for timestamped files matching `{exchange}_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz`.
+fn discover_symbols() -> Vec<(Exchange, String)> {
     let data_dirs = ["testdata", "../../testdata"];
-    let mut symbols = std::collections::BTreeSet::new();
+    let mut pairs = Vec::new();
     let re =
-        regex::Regex::new(r"^bybit_([a-z0-9]+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}\.jsonl\.gz$").unwrap();
+        regex::Regex::new(r"^(bybit|binance)_([a-z0-9]+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}\.jsonl\.gz$").unwrap();
     for dir in &data_dirs {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if let Some(caps) = re.captures(&name) {
-                    symbols.insert(caps[1].to_string());
+                    let exchange = match &caps[1] {
+                        "binance" => Exchange::Binance,
+                        "bybit" => Exchange::Bybit,
+                        _ => continue,
+                    };
+                    let symbol = caps[2].to_string();
+                    let pair = (exchange, symbol.clone());
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
                 }
             }
         }
     }
-    symbols.into_iter().collect()
+    pairs.sort_by(|a, b| {
+        let a_ex = match a.0 { Exchange::Binance => 0, Exchange::Bybit => 1 };
+        let b_ex = match b.0 { Exchange::Binance => 0, Exchange::Bybit => 1 };
+        a_ex.cmp(&b_ex).then_with(|| a.1.cmp(&b.1))
+    });
+    pairs
 }
 
 /// Helper: compute max drawdown from PnL series.
@@ -655,6 +708,7 @@ fn max_drawdown(pnl_series: &[f64]) -> f64 {
 fn run_strategy_on_events(
     strategy_name: &str,
     params: &StrategyParams,
+    exchange: Exchange,
     symbol: &str,
     events: &[(u64, replay_harness::ReplayEvent)],
     sim_config: SimConfig,
@@ -662,7 +716,7 @@ fn run_strategy_on_events(
     let mut harness = ReplayTestHarness::with_config(
         strategy_name,
         params.clone(),
-        Exchange::Bybit,
+        exchange,
         symbol,
         sim_config,
     );
@@ -675,7 +729,7 @@ fn run_strategy_on_events(
 fn bench_series() {
     println!();
     println!("═════════════════════════════════════════════════════════════════════════════════════════════════════════════");
-    println!("  8-HOUR SERIES BENCHMARK — all strategies on recorded Bybit data");
+    println!("  8-HOUR SERIES BENCHMARK — all strategies on recorded market data");
     println!("═════════════════════════════════════════════════════════════════════════════════════════════════════════════");
 
     let configs: Vec<(&str, &str, StrategyParams, SimConfig)> = vec![
@@ -941,25 +995,39 @@ fn bench_series() {
         ),
     ];
 
-    let symbols = discover_symbols();
-    if symbols.is_empty() {
+    let pairs = discover_symbols();
+    if pairs.is_empty() {
         println!("\n  SKIP: no series data found in testdata/\n");
         return;
     }
     println!(
-        "  Discovered symbols: {}",
-        symbols
+        "  Discovered pairs: {}",
+        pairs
             .iter()
-            .map(|s| s.to_uppercase())
+            .map(|(exch, sym)| {
+                let ex_name = match exch {
+                    Exchange::Binance => "Binance",
+                    Exchange::Bybit => "Bybit",
+                };
+                format!("{}/{}", sym.to_uppercase(), ex_name)
+            })
             .collect::<Vec<_>>()
             .join(", ")
     );
 
-    for sym in &symbols {
-        let events = match load_series(sym) {
+    for (exchange, sym) in &pairs {
+        let exchange_prefix = match exchange {
+            Exchange::Binance => "binance",
+            Exchange::Bybit => "bybit",
+        };
+        let exchange_name = match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Bybit => "Bybit",
+        };
+        let events = match load_series(exchange_prefix, sym) {
             Some(e) => e,
             None => {
-                println!("\n  SKIP: no series data for {}\n", sym.to_uppercase());
+                println!("\n  SKIP: no series data for {} / {}\n", sym.to_uppercase(), exchange_name);
                 continue;
             }
         };
@@ -1013,8 +1081,9 @@ fn bench_series() {
         println!();
         println!("  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐");
         println!(
-            "  │  {} — 8h series: {} book + {} trade = {} events",
+            "  │  {} / {} — 8h series: {} book + {} trade = {} events",
             sym.to_uppercase(),
+            exchange_name,
             book_count,
             trade_count,
             events.len()
@@ -1039,6 +1108,7 @@ fn bench_series() {
             let result = run_strategy_on_events(
                 strat_name,
                 params,
+                *exchange,
                 &sym.to_uppercase(),
                 &events,
                 sim_config.clone(),
@@ -1074,16 +1144,22 @@ fn bench_series() {
 /// perform well everywhere without blowing up on any single pair.
 #[test]
 fn bench_optimizer() {
-    let symbols = discover_symbols();
-    if symbols.is_empty() {
+    let pairs = discover_symbols();
+    if pairs.is_empty() {
         println!("\n  SKIP: no series data found for optimizer\n");
         return;
     }
 
-    // Load events for each symbol upfront.
-    let symbol_data: Vec<(String, Vec<(u64, replay_harness::ReplayEvent)>)> = symbols
+    // Load events for each (exchange, symbol) pair upfront.
+    let symbol_data: SymbolData = pairs
         .iter()
-        .filter_map(|sym| load_series(sym).map(|events| (sym.clone(), events)))
+        .filter_map(|(exch, sym)| {
+            let exchange_prefix = match exch {
+                Exchange::Binance => "binance",
+                Exchange::Bybit => "bybit",
+            };
+            load_series(exchange_prefix, sym).map(|events| (*exch, sym.clone(), events))
+        })
         .collect();
     if symbol_data.is_empty() {
         println!("\n  SKIP: could not load series data\n");
@@ -1112,6 +1188,7 @@ fn bench_optimizer() {
         * reduce_boosts.len();
 
     struct SymbolMetrics {
+        exchange: Exchange,
         symbol: String,
         pnl: f64,
         max_dd: f64,
@@ -1147,10 +1224,16 @@ fn bench_optimizer() {
     println!("  GRID OPTIMIZER — adaptive_mm, Calmar ratio objective");
     println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
     println!(
-        "  Symbols: {}",
+        "  Pairs: {}",
         symbol_data
             .iter()
-            .map(|(s, e)| format!("{} ({} events)", s.to_uppercase(), e.len()))
+            .map(|(exch, s, e)| {
+                let ex_name = match exch {
+                    Exchange::Binance => "Binance",
+                    Exchange::Bybit => "Bybit",
+                };
+                format!("{}/{} ({} events)", s.to_uppercase(), ex_name, e.len())
+            })
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -1198,10 +1281,11 @@ fn bench_optimizer() {
                             let mut total_pnl = 0.0;
                             let mut calmar_sum = 0.0;
 
-                            for (sym, events) in &symbol_data {
+                            for (exchange, sym, events) in &symbol_data {
                                 let result = run_strategy_on_events(
                                     "adaptive_mm",
                                     &params,
+                                    *exchange,
                                     &sym.to_uppercase(),
                                     events,
                                     sim_config.clone(),
@@ -1211,6 +1295,7 @@ fn bench_optimizer() {
                                 total_pnl += result.total_pnl;
                                 calmar_sum += c;
                                 per_symbol.push(SymbolMetrics {
+                                    exchange: *exchange,
                                     symbol: sym.to_uppercase(),
                                     pnl: result.total_pnl,
                                     max_dd: dd,
@@ -1263,15 +1348,19 @@ fn bench_optimizer() {
     });
 
     // ── Per-symbol top 10 ──
-    for (sym, _) in &symbol_data {
+    for (exchange, sym, _) in &symbol_data {
         let sym_upper = sym.to_uppercase();
+        let exchange_name = match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Bybit => "Bybit",
+        };
         let mut by_symbol: Vec<(usize, f64)> = results
             .iter()
             .enumerate()
             .filter_map(|(i, r)| {
                 r.per_symbol
                     .iter()
-                    .find(|m| m.symbol == sym_upper)
+                    .find(|m| m.symbol == sym_upper && m.exchange == *exchange)
                     .map(|m| (i, m.calmar))
             })
             .collect();
@@ -1282,7 +1371,7 @@ fn bench_optimizer() {
         });
 
         println!();
-        println!("  ── {} Top 10 by Calmar ──", sym_upper);
+        println!("  ── {} / {} Top 10 by Calmar ──", sym_upper, exchange_name);
         println!(
             "  {:>4} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>5} | {:>10} | {:>10} | {:>10} | {:>6}",
             "Rank", "γ", "κ", "τ", "VPIN", "Decay", "Boost", "PnL $", "Max DD $", "Calmar", "Fills"
@@ -1291,7 +1380,7 @@ fn bench_optimizer() {
 
         for (rank, &(idx, _)) in by_symbol.iter().take(10).enumerate() {
             let r = &results[idx];
-            let m = r.per_symbol.iter().find(|m| m.symbol == sym_upper).unwrap();
+            let m = r.per_symbol.iter().find(|m| m.symbol == sym_upper && m.exchange == *exchange).unwrap();
             let calmar_str = if m.calmar == f64::MAX {
                 "∞".to_string()
             } else {
@@ -1325,18 +1414,23 @@ fn bench_optimizer() {
             calmar_str, r.total_pnl,
         );
         println!(
-            "  {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>8}",
-            "Symbol", "PnL $", "Max DD $", "Calmar", "Fills", "Max Pos"
+            "  {:>15} | {:>10} | {:>10} | {:>10} | {:>6} | {:>8}",
+            "Pair", "PnL $", "Max DD $", "Calmar", "Fills", "Max Pos"
         );
         for m in &r.per_symbol {
+            let exchange_name = match m.exchange {
+                Exchange::Binance => "Binance",
+                Exchange::Bybit => "Bybit",
+            };
+            let pair_label = format!("{}/{}", m.symbol, exchange_name);
             let c_str = if m.calmar == f64::MAX {
                 "∞".to_string()
             } else {
                 format!("{:.4}", m.calmar)
             };
             println!(
-                "  {:>10} | {:>10.4} | {:>10.4} | {:>10} | {:>6} | {:>8.6}",
-                m.symbol, m.pnl, m.max_dd, c_str, m.fills, m.max_pos,
+                "  {:>15} | {:>10.4} | {:>10.4} | {:>10} | {:>6} | {:>8.6}",
+                pair_label, m.pnl, m.max_dd, c_str, m.fills, m.max_pos,
             );
         }
     }
@@ -1458,31 +1552,40 @@ fn bench_sim_realism() {
         },
     )];
 
-    let symbols = discover_symbols();
+    let pairs = discover_symbols();
     // Fallback to single-file data if no series.
-    let symbol_sources: Vec<(String, Vec<(u64, replay_harness::ReplayEvent)>)> =
-        if symbols.is_empty() {
-            let mut sources = Vec::new();
-            for sym in &["btcusdt", "ethusdt"] {
-                if let Some(path) = data_path(sym) {
-                    let events = load_events(&path).expect("failed to load");
-                    sources.push((sym.to_string(), events));
-                }
+    let symbol_sources: SymbolData = if pairs.is_empty() {
+        let mut sources = Vec::new();
+        for sym in &["btcusdt", "ethusdt"] {
+            if let Some((path, exchange)) = data_path(sym) {
+                let events = load_events(&path).expect("failed to load");
+                sources.push((exchange, sym.to_string(), events));
             }
-            sources
-        } else {
-            symbols
-                .iter()
-                .filter_map(|sym| load_series(sym).map(|events| (sym.clone(), events)))
-                .collect()
-        };
+        }
+        sources
+    } else {
+        pairs
+            .iter()
+            .filter_map(|(exch, sym)| {
+                let exchange_prefix = match exch {
+                    Exchange::Binance => "binance",
+                    Exchange::Bybit => "bybit",
+                };
+                load_series(exchange_prefix, sym).map(|events| (*exch, sym.clone(), events))
+            })
+            .collect()
+    };
 
     if symbol_sources.is_empty() {
         println!("\n  SKIP: no data found\n");
         return;
     }
 
-    for (sym, events) in &symbol_sources {
+    for (exchange, sym, events) in &symbol_sources {
+        let exchange_name = match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Bybit => "Bybit",
+        };
         let book_count = events
             .iter()
             .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
@@ -1495,9 +1598,10 @@ fn bench_sim_realism() {
         for (strat_name, params) in &strat_configs {
             println!();
             println!(
-                "  {} / {} — {} book + {} trade events",
+                "  {} / {} / {} — {} book + {} trade events",
                 strat_name,
                 sym.to_uppercase(),
+                exchange_name,
                 book_count,
                 trade_count
             );
@@ -1515,6 +1619,7 @@ fn bench_sim_realism() {
                 let result = run_strategy_on_events(
                     strat_name,
                     params,
+                    *exchange,
                     &sym.to_uppercase(),
                     events,
                     sim_config.clone(),

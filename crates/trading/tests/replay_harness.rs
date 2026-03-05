@@ -71,9 +71,10 @@ pub fn load_events_multi(paths: &[String]) -> Result<Vec<(u64, ReplayEvent)>> {
 }
 
 /// Find all timestamped data files for a symbol in the given directory.
-/// Matches pattern: bybit_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz
-pub fn find_series_files(dir: &str, symbol: &str) -> Vec<String> {
-    let prefix = format!("bybit_{}_", symbol.to_lowercase());
+/// Matches pattern: {exchange_prefix}_{symbol}_YYYY-MM-DD_HH:MM.jsonl.gz
+/// Example: find_series_files("testdata", "binance", "btcusdt") finds binance_btcusdt_*.jsonl.gz
+pub fn find_series_files(dir: &str, exchange_prefix: &str, symbol: &str) -> Vec<String> {
+    let prefix = format!("{}_{}_", exchange_prefix, symbol.to_lowercase());
     let suffix = ".jsonl.gz";
 
     let mut files = Vec::new();

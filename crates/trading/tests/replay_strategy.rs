@@ -12,27 +12,41 @@ use cm_strategy::traits::StrategyParams;
 
 use replay_harness::{default_params, load_events, ReplayTestHarness};
 
-/// Helper: skip test if the data file doesn't exist.
-/// Tries multiple duration suffixes (30m, 3m) and path locations.
-fn data_path(symbol: &str) -> Option<String> {
-    let durations = ["30m", "3m"];
+/// Helper: find data file for a specific exchange and symbol.
+/// Returns (path, exchange) if found.
+fn data_path_for_exchange(exchange: &str, symbol: &str) -> Option<(String, Exchange)> {
+    let durations = ["30m", "3m", "1m"];
+    let exchange_enum = match exchange {
+        "binance" => Exchange::Binance,
+        "bybit" => Exchange::Bybit,
+        _ => return None,
+    };
     for dur in &durations {
         let candidates = [
-            format!("testdata/bybit_{}_{}.jsonl.gz", symbol, dur),
-            format!("../../testdata/bybit_{}_{}.jsonl.gz", symbol, dur),
+            format!("testdata/{}_{}_{}.jsonl.gz", exchange, symbol, dur),
+            format!("../../testdata/{}_{}_{}.jsonl.gz", exchange, symbol, dur),
         ];
         for path in &candidates {
             if Path::new(path).exists() {
-                return Some(path.clone());
+                return Some((path.clone(), exchange_enum));
             }
         }
     }
     None
 }
 
+/// Helper: skip test if the data file doesn't exist.
+/// Tries both Bybit and Binance, multiple duration suffixes (30m, 3m, 1m) and path locations.
+/// Returns (path, exchange) for the first match found.
+fn data_path(symbol: &str) -> Option<(String, Exchange)> {
+    // Try Bybit first (most test data), then Binance
+    data_path_for_exchange("bybit", symbol)
+        .or_else(|| data_path_for_exchange("binance", symbol))
+}
+
 #[test]
 fn test_mm_strategy_btc_30m() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no BTCUSDT data file found");
@@ -44,7 +58,7 @@ fn test_mm_strategy_btc_30m() {
     assert!(!events.is_empty(), "data file should not be empty");
 
     let mut harness =
-        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
+        ReplayTestHarness::new("simple_mm", default_params(), exchange, "BTCUSDT");
     let result = harness.run(&events);
 
     // Strategy generates orders on real data.
@@ -67,7 +81,7 @@ fn test_mm_strategy_btc_30m() {
 
 #[test]
 fn test_mm_strategy_eth_30m() {
-    let path = match data_path("ethusdt") {
+    let (path, exchange) = match data_path("ethusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no ETHUSDT data file found");
@@ -79,7 +93,7 @@ fn test_mm_strategy_eth_30m() {
     assert!(!events.is_empty(), "data file should not be empty");
 
     let mut harness =
-        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "ETHUSDT");
+        ReplayTestHarness::new("simple_mm", default_params(), exchange, "ETHUSDT");
     let result = harness.run(&events);
 
     assert!(result.order_count > 0, "strategy should generate orders");
@@ -99,7 +113,7 @@ fn test_mm_strategy_eth_30m() {
 
 #[test]
 fn test_mm_different_params() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no BTCUSDT data file found");
@@ -117,7 +131,7 @@ fn test_mm_different_params() {
         }),
     };
 
-    let mut harness = ReplayTestHarness::new("market_making", params, Exchange::Bybit, "BTCUSDT");
+    let mut harness = ReplayTestHarness::new("market_making", params, exchange, "BTCUSDT");
     let result = harness.run(&events);
 
     // Should still produce orders without panicking.
@@ -129,7 +143,7 @@ fn test_mm_different_params() {
 
 #[test]
 fn test_no_panics_on_real_data() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no BTCUSDT data file found");
@@ -143,7 +157,7 @@ fn test_no_panics_on_real_data() {
     let mut harness = ReplayTestHarness::new(
         "market_making",
         default_params(),
-        Exchange::Bybit,
+        exchange,
         "BTCUSDT",
     );
     let _result = harness.run(&events);
@@ -152,7 +166,7 @@ fn test_no_panics_on_real_data() {
 
 #[test]
 fn test_adaptive_mm_btc_30m() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no BTCUSDT data file found");
@@ -167,7 +181,7 @@ fn test_adaptive_mm_btc_30m() {
     let params = StrategyParams {
         params: serde_json::json!({"max_position": max_pos_btc}),
     };
-    let mut harness = ReplayTestHarness::new("adaptive_mm", params, Exchange::Bybit, "BTCUSDT");
+    let mut harness = ReplayTestHarness::new("adaptive_mm", params, exchange, "BTCUSDT");
     let result = harness.run(&events);
 
     assert!(result.order_count > 0, "strategy should generate orders");
@@ -191,7 +205,7 @@ fn test_adaptive_mm_btc_30m() {
 
 #[test]
 fn test_adaptive_mm_eth_30m() {
-    let path = match data_path("ethusdt") {
+    let (path, exchange) = match data_path("ethusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no ETHUSDT data file found");
@@ -206,7 +220,7 @@ fn test_adaptive_mm_eth_30m() {
     let params = StrategyParams {
         params: serde_json::json!({"max_position": max_pos_eth}),
     };
-    let mut harness = ReplayTestHarness::new("adaptive_mm", params, Exchange::Bybit, "ETHUSDT");
+    let mut harness = ReplayTestHarness::new("adaptive_mm", params, exchange, "ETHUSDT");
     let result = harness.run(&events);
 
     assert!(result.order_count > 0, "strategy should generate orders");
@@ -228,7 +242,7 @@ fn test_adaptive_mm_eth_30m() {
 
 #[test]
 fn test_pnl_series_monotonic_events() {
-    let path = match data_path("btcusdt") {
+    let (path, exchange) = match data_path("btcusdt") {
         Some(p) => p,
         None => {
             eprintln!("SKIP: no BTCUSDT data file found");
@@ -239,7 +253,7 @@ fn test_pnl_series_monotonic_events() {
     let events = load_events(&path).expect("failed to load events");
 
     let mut harness =
-        ReplayTestHarness::new("simple_mm", default_params(), Exchange::Bybit, "BTCUSDT");
+        ReplayTestHarness::new("simple_mm", default_params(), exchange, "BTCUSDT");
     let result = harness.run(&events);
 
     // PnL series should have one entry per book update event.
@@ -257,4 +271,96 @@ fn test_pnl_series_monotonic_events() {
     for (i, pnl) in result.pnl_series.iter().enumerate() {
         assert!(pnl.is_finite(), "PnL at index {} is not finite: {}", i, pnl);
     }
+}
+
+// ── Binance-specific tests ──
+// Binance data is shorter (~1min vs 30min Bybit), so thresholds are more lenient.
+
+#[test]
+fn test_mm_strategy_binance_btc() {
+    let (path, exchange) = match data_path_for_exchange("binance", "btcusdt") {
+        Some(p) => p,
+        None => {
+            eprintln!("SKIP: no Binance BTCUSDT data file found");
+            return;
+        }
+    };
+
+    let events = load_events(&path).expect("failed to load events");
+    assert!(!events.is_empty(), "data file should not be empty");
+
+    let mut harness =
+        ReplayTestHarness::new("simple_mm", default_params(), exchange, "BTCUSDT");
+    let result = harness.run(&events);
+
+    // Strategy should generate orders without panicking.
+    assert!(result.order_count > 0, "strategy should generate orders");
+    // Short data may have fewer fills — just verify no panic.
+}
+
+#[test]
+fn test_mm_strategy_binance_eth() {
+    let (path, exchange) = match data_path_for_exchange("binance", "ethusdt") {
+        Some(p) => p,
+        None => {
+            eprintln!("SKIP: no Binance ETHUSDT data file found");
+            return;
+        }
+    };
+
+    let events = load_events(&path).expect("failed to load events");
+    assert!(!events.is_empty(), "data file should not be empty");
+
+    let mut harness =
+        ReplayTestHarness::new("simple_mm", default_params(), exchange, "ETHUSDT");
+    let result = harness.run(&events);
+
+    assert!(result.order_count > 0, "strategy should generate orders");
+}
+
+#[test]
+fn test_adaptive_mm_binance_btc() {
+    let (path, exchange) = match data_path_for_exchange("binance", "btcusdt") {
+        Some(p) => p,
+        None => {
+            eprintln!("SKIP: no Binance BTCUSDT data file found");
+            return;
+        }
+    };
+
+    let events = load_events(&path).expect("failed to load events");
+    assert!(!events.is_empty(), "data file should not be empty");
+
+    let max_pos_btc = 0.01;
+    let params = StrategyParams {
+        params: serde_json::json!({"max_position": max_pos_btc}),
+    };
+    let mut harness = ReplayTestHarness::new("adaptive_mm", params, exchange, "BTCUSDT");
+    let result = harness.run(&events);
+
+    // Strategy should run without panicking on short Binance data.
+    assert!(result.order_count > 0, "strategy should generate orders");
+}
+
+#[test]
+fn test_adaptive_mm_binance_eth() {
+    let (path, exchange) = match data_path_for_exchange("binance", "ethusdt") {
+        Some(p) => p,
+        None => {
+            eprintln!("SKIP: no Binance ETHUSDT data file found");
+            return;
+        }
+    };
+
+    let events = load_events(&path).expect("failed to load events");
+    assert!(!events.is_empty(), "data file should not be empty");
+
+    let max_pos_eth = 0.1;
+    let params = StrategyParams {
+        params: serde_json::json!({"max_position": max_pos_eth}),
+    };
+    let mut harness = ReplayTestHarness::new("adaptive_mm", params, exchange, "ETHUSDT");
+    let result = harness.run(&events);
+
+    assert!(result.order_count > 0, "strategy should generate orders");
 }
