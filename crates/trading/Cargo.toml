@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "cm-record"
 path = "src/bin/record.rs"
 
+[[bin]]
+name = "cm-analyze-symbol"
+path = "src/bin/analyze_symbol.rs"
+
 [dependencies]
 cm-core = { workspace = true }
 cm-market-data = { path = "../market-data" }
