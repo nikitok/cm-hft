@@ -38,8 +38,7 @@ fn data_path_for_exchange(exchange: &str, symbol: &str) -> Option<(String, Excha
 
 fn data_path(symbol: &str) -> Option<(String, Exchange)> {
     // Try Bybit first (most test data), then Binance
-    data_path_for_exchange("bybit", symbol)
-        .or_else(|| data_path_for_exchange("binance", symbol))
+    data_path_for_exchange("bybit", symbol).or_else(|| data_path_for_exchange("binance", symbol))
 }
 
 fn run_and_report(
@@ -49,7 +48,14 @@ fn run_and_report(
     symbol: &str,
     path: &str,
 ) {
-    run_and_report_with_config(strategy_name, params, exchange, symbol, path, SimConfig::default());
+    run_and_report_with_config(
+        strategy_name,
+        params,
+        exchange,
+        symbol,
+        path,
+        SimConfig::default(),
+    );
 }
 
 fn run_and_report_with_config(
@@ -71,13 +77,8 @@ fn run_and_report_with_config(
         .count();
 
     let start = std::time::Instant::now();
-    let mut harness = ReplayTestHarness::with_config(
-        strategy_name,
-        params.clone(),
-        exchange,
-        symbol,
-        sim_config,
-    );
+    let mut harness =
+        ReplayTestHarness::with_config(strategy_name, params.clone(), exchange, symbol, sim_config);
     let result = harness.run(&events);
     let elapsed = start.elapsed();
 
@@ -336,7 +337,12 @@ fn bench_improvement_stages() {
         let events = load_events(&path).expect("failed to load");
 
         println!();
-        println!("  {} / {} ({} events)", sym.to_uppercase(), exchange_name, events.len());
+        println!(
+            "  {} / {} ({} events)",
+            sym.to_uppercase(),
+            exchange_name,
+            events.len()
+        );
         println!("  {:-<95}", "");
         println!(
             "  {:>2} | {:<15} | {:>6} | {:>8} | {:>12} | {:>10} | {:>12} | {:>10}",
@@ -535,7 +541,10 @@ fn bench_param_sweep() {
 
     println!();
     println!("═══════════════════════════════════════════════════════════════════════");
-    println!("  PARAMETER SWEEP — adaptive_mm on BTCUSDT / {}", exchange_name);
+    println!(
+        "  PARAMETER SWEEP — adaptive_mm on BTCUSDT / {}",
+        exchange_name
+    );
     println!(
         "  {} combinations",
         risk_aversions.len()
@@ -659,8 +668,10 @@ fn load_series(exchange: &str, sym: &str) -> Option<Vec<(u64, replay_harness::Re
 fn discover_symbols() -> Vec<(Exchange, String)> {
     let data_dirs = ["testdata", "../../testdata"];
     let mut pairs = Vec::new();
-    let re =
-        regex::Regex::new(r"^(bybit|binance)_([a-z0-9]+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}\.jsonl\.gz$").unwrap();
+    let re = regex::Regex::new(
+        r"^(bybit|binance)_([a-z0-9]+)_\d{4}-\d{2}-\d{2}_\d{2}:\d{2}\.jsonl\.gz$",
+    )
+    .unwrap();
     for dir in &data_dirs {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
@@ -681,8 +692,14 @@ fn discover_symbols() -> Vec<(Exchange, String)> {
         }
     }
     pairs.sort_by(|a, b| {
-        let a_ex = match a.0 { Exchange::Binance => 0, Exchange::Bybit => 1 };
-        let b_ex = match b.0 { Exchange::Binance => 0, Exchange::Bybit => 1 };
+        let a_ex = match a.0 {
+            Exchange::Binance => 0,
+            Exchange::Bybit => 1,
+        };
+        let b_ex = match b.0 {
+            Exchange::Binance => 0,
+            Exchange::Bybit => 1,
+        };
         a_ex.cmp(&b_ex).then_with(|| a.1.cmp(&b.1))
     });
     pairs
@@ -713,13 +730,8 @@ fn run_strategy_on_events(
     events: &[(u64, replay_harness::ReplayEvent)],
     sim_config: SimConfig,
 ) -> replay_harness::ReplayResult {
-    let mut harness = ReplayTestHarness::with_config(
-        strategy_name,
-        params.clone(),
-        exchange,
-        symbol,
-        sim_config,
-    );
+    let mut harness =
+        ReplayTestHarness::with_config(strategy_name, params.clone(), exchange, symbol, sim_config);
     harness.run(events)
 }
 
@@ -1027,7 +1039,11 @@ fn bench_series() {
         let events = match load_series(exchange_prefix, sym) {
             Some(e) => e,
             None => {
-                println!("\n  SKIP: no series data for {} / {}\n", sym.to_uppercase(), exchange_name);
+                println!(
+                    "\n  SKIP: no series data for {} / {}\n",
+                    sym.to_uppercase(),
+                    exchange_name
+                );
                 continue;
             }
         };
@@ -1099,7 +1115,7 @@ fn bench_series() {
         println!("  ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤");
         println!(
             "  │ {:>2} | {:<28} | {:>6} | {:>8} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>8}",
-            "#", "Strategy", "Fills", "Max Pos", "Realized$", "M2M PnL$", "Max DD$", "Peak Not$", "Fee$", "$/fill"
+            "#", "Strategy", "Fills", "Max Pos", "Realized$", "M2M PnL$", "Max DD$", "Peak Not$", "Fees$", "$/fill"
         );
         println!("  │ {:-<123}", "");
 
@@ -1380,7 +1396,11 @@ fn bench_optimizer() {
 
         for (rank, &(idx, _)) in by_symbol.iter().take(10).enumerate() {
             let r = &results[idx];
-            let m = r.per_symbol.iter().find(|m| m.symbol == sym_upper && m.exchange == *exchange).unwrap();
+            let m = r
+                .per_symbol
+                .iter()
+                .find(|m| m.symbol == sym_upper && m.exchange == *exchange)
+                .unwrap();
             let calmar_str = if m.calmar == f64::MAX {
                 "∞".to_string()
             } else {
@@ -1663,5 +1683,431 @@ fn bench_sim_realism() {
             println!("  {:-<130}", "");
         }
     }
+    println!();
+}
+
+/// ETHUSDT optimization sweep: order_size × reprice_threshold × flush_interval.
+///
+/// Sweeps 4×5×4 = 80 configs per exchange on 7-day ETHUSDT data (Binance and Bybit),
+/// ranks by Calmar ratio (PnL / MaxDD), and prints results table.
+///
+/// Requires March 2-8 ETHUSDT data symlinked into testdata/. Skips gracefully if absent.
+///
+/// To set up data:
+///   for d in $(seq -w 2 8); do
+///     for f in .data/recordings/binance/binance_ethusdt_2026-03-0${d}_*.jsonl.gz; do
+///       ln -sf "$(pwd)/$f" testdata/$(basename "$f"); done; done
+///   # repeat for bybit
+#[test]
+fn bench_ethusdt_optimization() {
+    const DEFAULT_MAX_POSITION: f64 = 0.1;
+
+    let base = serde_json::json!({
+        "risk_aversion": 0.3,
+        "fill_intensity": 1.5,
+        "time_horizon": 1.0,
+        "vpin_factor": 2.0,
+        "vpin_bucket_size": 50000.0,
+        "vpin_n_buckets": 20,
+        "size_decay_power": 2.0,
+        "reduce_boost": 0.5,
+    });
+
+    let order_sizes: &[f64] = &[0.01, 0.02, 0.05, 0.1];
+    let reprice_bps_values: &[f64] = &[1.5, 3.0, 5.0, 8.0, 12.0];
+    let flush_intervals: &[u64] = &[0, 500, 1000, 2000];
+
+    struct SweepResult {
+        order_size: f64,
+        reprice_bps: f64,
+        flush_int: u64,
+        fills: usize,
+        orders: usize,
+        realized: f64,
+        m2m_pnl: f64,
+        fees: f64,
+        max_dd: f64,
+        calmar: f64,
+        pnl_per_fill: f64,
+    }
+
+    fn compute_calmar(pnl: f64, dd: f64) -> f64 {
+        if dd > 1e-6 {
+            pnl / dd
+        } else if pnl > 0.0 {
+            f64::MAX
+        } else {
+            0.0
+        }
+    }
+
+    println!();
+    println!("══════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  ETHUSDT OPTIMIZATION SWEEP — order_size × reprice_bps × flush_interval");
+    println!("  Fixed: FULL STACK (γ=0.3, κ=1.5, τ=1.0, vpin=2.0, decay=2.0, boost=0.5)");
+    println!("══════════════════════════════════════════════════════════════════════════════════════════");
+
+    for &(exchange, exchange_str, symbol_str) in &[
+        (Exchange::Binance, "binance", "ETHUSDT"),
+        (Exchange::Bybit, "bybit", "ETHUSDT"),
+    ] {
+        let data_dir_candidates = ["testdata", "../../testdata"];
+        let mut events_opt: Option<Vec<(u64, replay_harness::ReplayEvent)>> = None;
+        for dir in &data_dir_candidates {
+            let files = find_series_files(dir, exchange_str, "ethusdt");
+            if !files.is_empty() {
+                match load_events_multi(&files) {
+                    Ok(ev) => {
+                        events_opt = Some(ev);
+                        break;
+                    }
+                    Err(e) => eprintln!("WARN: failed to load {} ETHUSDT: {}", exchange_str, e),
+                }
+            }
+        }
+        let events = match events_opt {
+            Some(e) => e,
+            None => {
+                println!(
+                    "\n  SKIP: no {} ETHUSDT series data in testdata/\n",
+                    exchange_str.to_uppercase()
+                );
+                continue;
+            }
+        };
+
+        let event_count = events.len();
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        println!(
+            "\n  {} ETHUSDT — {} events ({} book updates)",
+            exchange_str.to_uppercase(),
+            event_count,
+            book_count
+        );
+
+        // Baseline: FULL STACK, order_size=0.01, reprice=1.5bps, no flush
+        let baseline_params = StrategyParams {
+            params: {
+                let mut p = base.clone();
+                p["order_size"] = serde_json::json!(0.01);
+                p["reprice_threshold_bps"] = serde_json::json!(1.5);
+                p["max_position"] = serde_json::json!(DEFAULT_MAX_POSITION);
+                p
+            },
+        };
+        let baseline_result = run_strategy_on_events(
+            "adaptive_mm",
+            &baseline_params,
+            exchange,
+            symbol_str,
+            &events,
+            SimConfig::default(),
+        );
+        let baseline_m2m = baseline_result.pnl_series.last().copied().unwrap_or(0.0);
+        let baseline_dd = max_drawdown(&baseline_result.pnl_series);
+        let baseline_calmar = compute_calmar(baseline_result.total_pnl, baseline_dd);
+        println!(
+            "  BASELINE  order=0.01 reprice=1.5bps flush=0 → fills={} orders={} realized=${:.2} m2m=${:.2} fees=${:.2} dd=${:.2} calmar={:.3}",
+            baseline_result.fill_count, baseline_result.order_count,
+            baseline_result.total_pnl, baseline_m2m, baseline_result.fee_total, baseline_dd, baseline_calmar
+        );
+
+        // Run sweep
+        let start_all = std::time::Instant::now();
+        let mut results: Vec<SweepResult> = Vec::new();
+
+        for &order_size in order_sizes {
+            // Scale max_position proportionally so all order_size values share same relative risk
+            let max_pos = DEFAULT_MAX_POSITION.max(5.0 * order_size);
+
+            for &reprice_bps in reprice_bps_values {
+                for &flush_int in flush_intervals {
+                    let mut params_json = base.clone();
+                    params_json["order_size"] = serde_json::json!(order_size);
+                    params_json["reprice_threshold_bps"] = serde_json::json!(reprice_bps);
+                    params_json["max_position"] = serde_json::json!(max_pos);
+                    if flush_int > 0 {
+                        params_json["flush_interval_ticks"] = serde_json::json!(flush_int);
+                        params_json["flush_threshold"] = serde_json::json!(0.0);
+                    }
+                    let params = StrategyParams {
+                        params: params_json,
+                    };
+
+                    let sim_cfg = SimConfig {
+                        timer_interval: if flush_int > 0 { 1000 } else { 0 },
+                        ..Default::default()
+                    };
+
+                    let result = run_strategy_on_events(
+                        "adaptive_mm",
+                        &params,
+                        exchange,
+                        symbol_str,
+                        &events,
+                        sim_cfg,
+                    );
+
+                    let m2m = result.pnl_series.last().copied().unwrap_or(0.0);
+                    let dd = max_drawdown(&result.pnl_series);
+                    let calmar = compute_calmar(result.total_pnl, dd);
+                    let pnl_per_fill = if result.fill_count > 0 {
+                        result.total_pnl / result.fill_count as f64
+                    } else {
+                        0.0
+                    };
+
+                    results.push(SweepResult {
+                        order_size,
+                        reprice_bps,
+                        flush_int,
+                        fills: result.fill_count,
+                        orders: result.order_count,
+                        realized: result.total_pnl,
+                        m2m_pnl: m2m,
+                        fees: result.fee_total,
+                        max_dd: dd,
+                        calmar,
+                        pnl_per_fill,
+                    });
+                }
+            }
+        }
+
+        // Sort by Calmar descending
+        results.sort_by(|a, b| {
+            b.calmar
+                .partial_cmp(&a.calmar)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        println!(
+            "  Sweep: {} configs in {:.1?}",
+            results.len(),
+            start_all.elapsed()
+        );
+        println!();
+        println!(
+            "  {:>4} | {:>7} | {:>10} | {:>8} | {:>6} | {:>7} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8} | {:>7}",
+            "Rank", "order_sz", "reprice_bps", "flush_int", "Fills", "Orders",
+            "Realized$", "M2M PnL$", "Fees$", "Max DD$", "Calmar", "$/fill"
+        );
+        println!("  {:-<120}", "");
+
+        let top_n = results.len().min(20);
+        for (rank, r) in results.iter().take(top_n).enumerate() {
+            let order_reduction = if baseline_result.order_count > 0 {
+                r.orders as f64 / baseline_result.order_count as f64
+            } else {
+                1.0
+            };
+            let marker = if order_reduction <= 0.7 { " ★" } else { "" };
+            println!(
+                "  {:>4} | {:>7.4} | {:>10.1} | {:>8} | {:>6} | {:>7} | {:>10.2} | {:>10.2} | {:>8.2} | {:>8.2} | {:>8.3} | {:>7.4}{}",
+                rank + 1, r.order_size, r.reprice_bps, r.flush_int,
+                r.fills, r.orders, r.realized, r.m2m_pnl,
+                r.fees, r.max_dd, r.calmar, r.pnl_per_fill, marker
+            );
+        }
+
+        if results.len() > top_n {
+            println!("  {:>4} | ...", "...");
+            let bottom_start = results.len().saturating_sub(5);
+            println!("  --- Bottom 5 ---");
+            for (i, r) in results[bottom_start..].iter().enumerate() {
+                println!(
+                    "  {:>4} | {:>7.4} | {:>10.1} | {:>8} | {:>6} | {:>7} | {:>10.2} | {:>10.2} | {:>8.2} | {:>8.2} | {:>8.3} | {:>7.4}",
+                    results.len() - 5 + i + 1, r.order_size, r.reprice_bps, r.flush_int,
+                    r.fills, r.orders, r.realized, r.m2m_pnl,
+                    r.fees, r.max_dd, r.calmar, r.pnl_per_fill
+                );
+            }
+        }
+
+        println!("  {:-<120}", "");
+        println!(
+            "  ★ = order count ≤ 70% of baseline ({} orders)",
+            baseline_result.order_count
+        );
+        println!("  Baseline calmar: {:.3}", baseline_calmar);
+    }
+
+    println!();
+}
+
+/// VPIN factor sweep on ETHUSDT — fixed reprice_bps=12, order_size=0.01.
+///
+/// Sweeps vpin_factor × [0.0, 2.0, 4.0, 6.0, 8.0, 10.0] on 7-day ETHUSDT data
+/// (Binance and Bybit), ranks by Calmar ratio. Hypothesis: higher VPIN factor
+/// reduces adverse selection enough to improve realized PnL.
+///
+/// Requires March 2-8 ETHUSDT data symlinked into testdata/. Skips gracefully if absent.
+#[test]
+fn bench_vpin_factor_sweep() {
+    let vpin_factors: &[f64] = &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0];
+
+    struct VpinResult {
+        vpin_factor: f64,
+        fills: usize,
+        orders: usize,
+        realized: f64,
+        m2m_pnl: f64,
+        fees: f64,
+        max_dd: f64,
+        calmar: f64,
+        pnl_per_fill: f64,
+    }
+
+    fn compute_calmar_vpin(pnl: f64, dd: f64) -> f64 {
+        if dd > 1e-6 {
+            pnl / dd
+        } else if pnl > 0.0 {
+            f64::MAX
+        } else {
+            0.0
+        }
+    }
+
+    println!();
+    println!("══════════════════════════════════════════════════════════════════════════════════════════");
+    println!("  ETHUSDT VPIN FACTOR SWEEP — vpin_factor × [0, 2, 4, 6, 8, 10]");
+    println!("  Fixed: reprice_bps=12, order_size=0.01, flush=0, γ=0.3, κ=1.5, τ=1.0");
+    println!("══════════════════════════════════════════════════════════════════════════════════════════");
+
+    for &(exchange, exchange_str, symbol_str) in &[
+        (Exchange::Binance, "binance", "ETHUSDT"),
+        (Exchange::Bybit, "bybit", "ETHUSDT"),
+    ] {
+        let data_dir_candidates = ["testdata", "../../testdata"];
+        let mut events_opt: Option<Vec<(u64, replay_harness::ReplayEvent)>> = None;
+        for dir in &data_dir_candidates {
+            let files = find_series_files(dir, exchange_str, "ethusdt");
+            if !files.is_empty() {
+                match load_events_multi(&files) {
+                    Ok(ev) => {
+                        events_opt = Some(ev);
+                        break;
+                    }
+                    Err(e) => eprintln!("WARN: failed to load {} ETHUSDT: {}", exchange_str, e),
+                }
+            }
+        }
+        let events = match events_opt {
+            Some(e) => e,
+            None => {
+                println!(
+                    "\n  SKIP: no {} ETHUSDT series data in testdata/\n",
+                    exchange_str.to_uppercase()
+                );
+                continue;
+            }
+        };
+
+        let event_count = events.len();
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        println!(
+            "\n  {} ETHUSDT — {} events ({} book updates)",
+            exchange_str.to_uppercase(),
+            event_count,
+            book_count
+        );
+
+        let start_all = std::time::Instant::now();
+        let mut results: Vec<VpinResult> = Vec::new();
+
+        for &vpin_factor in vpin_factors {
+            let params = StrategyParams {
+                params: serde_json::json!({
+                    "risk_aversion": 0.3,
+                    "fill_intensity": 1.5,
+                    "time_horizon": 1.0,
+                    "vpin_factor": vpin_factor,
+                    "vpin_bucket_size": 50000.0,
+                    "vpin_n_buckets": 20,
+                    "size_decay_power": 2.0,
+                    "reduce_boost": 0.5,
+                    "order_size": 0.01,
+                    "reprice_threshold_bps": 12.0,
+                    "max_position": 0.5,
+                }),
+            };
+
+            let result = run_strategy_on_events(
+                "adaptive_mm",
+                &params,
+                exchange,
+                symbol_str,
+                &events,
+                SimConfig::default(),
+            );
+
+            let m2m = result.pnl_series.last().copied().unwrap_or(0.0);
+            let dd = max_drawdown(&result.pnl_series);
+            let calmar = compute_calmar_vpin(result.total_pnl, dd);
+            let pnl_per_fill = if result.fill_count > 0 {
+                result.total_pnl / result.fill_count as f64
+            } else {
+                0.0
+            };
+
+            results.push(VpinResult {
+                vpin_factor,
+                fills: result.fill_count,
+                orders: result.order_count,
+                realized: result.total_pnl,
+                m2m_pnl: m2m,
+                fees: result.fee_total,
+                max_dd: dd,
+                calmar,
+                pnl_per_fill,
+            });
+        }
+
+        // Sort by Calmar descending
+        results.sort_by(|a, b| {
+            b.calmar
+                .partial_cmp(&a.calmar)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        println!(
+            "  Sweep: {} configs in {:.1?}",
+            results.len(),
+            start_all.elapsed()
+        );
+        println!();
+        println!(
+            "  {:>4} | {:>11} | {:>6} | {:>7} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8} | {:>7}",
+            "Rank", "vpin_factor", "Fills", "Orders", "Realized$", "M2M PnL$", "Fees$", "Max DD$",
+            "Calmar", "$/fill"
+        );
+        println!("  {:-<105}", "");
+
+        for (rank, r) in results.iter().enumerate() {
+            println!(
+                "  {:>4} | {:>11.1} | {:>6} | {:>7} | {:>10.2} | {:>10.2} | {:>8.2} | {:>8.2} | {:>8.3} | {:>7.4}",
+                rank + 1,
+                r.vpin_factor,
+                r.fills,
+                r.orders,
+                r.realized,
+                r.m2m_pnl,
+                r.fees,
+                r.max_dd,
+                r.calmar,
+                r.pnl_per_fill
+            );
+        }
+
+        println!("  {:-<105}", "");
+        println!("  vpin_factor=2.0 is current baseline");
+    }
+
     println!();
 }

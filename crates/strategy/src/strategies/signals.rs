@@ -116,6 +116,90 @@ impl TradeFlowSignal {
     }
 }
 
+/// Short-term trade imbalance tracker using a bounded rolling window.
+///
+/// Tracks buy and sell notional volume over the most recent `max_size` trades.
+/// Unlike `TradeFlowSignal` (which uses exponential decay with infinite memory),
+/// this tracker uses a hard eviction window to capture directional pressure that
+/// is meaningful only on a short time scale.
+///
+/// The `(is_buy, notional, timestamp_ns)` tuple stores timestamps to support
+/// future time-based eviction without struct redesign.
+#[derive(Debug, Clone)]
+pub struct TradeImbalanceTracker {
+    window: VecDeque<(bool, f64, u64)>,
+    max_size: usize,
+}
+
+impl TradeImbalanceTracker {
+    /// Create a tracker with the given lookback window size (number of trades).
+    /// Use `max_size = 0` to create a disabled (no-op) tracker.
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            window: VecDeque::with_capacity(max_size.min(4096)),
+            max_size,
+        }
+    }
+
+    /// Feed a trade event. `timestamp_ns` is stored for future time-based eviction.
+    pub fn update(&mut self, is_buy: bool, notional: f64, timestamp_ns: u64) {
+        if self.max_size == 0 {
+            return;
+        }
+        self.window.push_back((is_buy, notional, timestamp_ns));
+        if self.window.len() > self.max_size {
+            self.window.pop_front();
+        }
+    }
+
+    /// Number of trades currently in the window.
+    pub fn window_size(&self) -> usize {
+        self.window.len()
+    }
+
+    /// Normalised imbalance in range `[-1, +1]`.
+    /// Positive = buy pressure, negative = sell pressure, 0 = balanced or empty.
+    pub fn imbalance(&self) -> f64 {
+        if self.window.is_empty() {
+            return 0.0;
+        }
+        let mut buy_vol = 0.0_f64;
+        let mut sell_vol = 0.0_f64;
+        for &(is_buy, notional, _) in &self.window {
+            if is_buy {
+                buy_vol += notional;
+            } else {
+                sell_vol += notional;
+            }
+        }
+        let total = buy_vol + sell_vol;
+        if total < 1e-12 {
+            return 0.0;
+        }
+        (buy_vol - sell_vol) / total
+    }
+
+    /// Buy volume fraction in range `[0, 1]`.
+    pub fn buy_ratio(&self) -> f64 {
+        if self.window.is_empty() {
+            return 0.0;
+        }
+        let mut buy_vol = 0.0_f64;
+        let mut total = 0.0_f64;
+        for &(is_buy, notional, _) in &self.window {
+            total += notional;
+            if is_buy {
+                buy_vol += notional;
+            }
+        }
+        if total < 1e-12 {
+            0.0
+        } else {
+            buy_vol / total
+        }
+    }
+}
+
 /// Volume-synchronized probability of informed trading (VPIN).
 ///
 /// Divides trade flow into equal-volume buckets and measures the average
@@ -294,6 +378,61 @@ mod tests {
     fn test_vpin_no_buckets() {
         let vpin = VpinTracker::new(1000.0, 5);
         assert!((vpin.vpin() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trade_imbalance_empty_window() {
+        let tracker = TradeImbalanceTracker::new(100);
+        assert_eq!(tracker.window_size(), 0);
+        assert!((tracker.imbalance() - 0.0).abs() < 1e-10);
+        assert!((tracker.buy_ratio() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trade_imbalance_all_buys() {
+        let mut tracker = TradeImbalanceTracker::new(100);
+        for i in 0..50 {
+            tracker.update(true, 1000.0, i as u64);
+        }
+        assert!((tracker.imbalance() - 1.0).abs() < 1e-10, "all-buy imbalance={}", tracker.imbalance());
+        assert!((tracker.buy_ratio() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trade_imbalance_all_sells() {
+        let mut tracker = TradeImbalanceTracker::new(100);
+        for i in 0..50 {
+            tracker.update(false, 1000.0, i as u64);
+        }
+        assert!((tracker.imbalance() - (-1.0)).abs() < 1e-10, "all-sell imbalance={}", tracker.imbalance());
+        assert!((tracker.buy_ratio() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trade_imbalance_window_eviction() {
+        let mut tracker = TradeImbalanceTracker::new(10);
+        // Fill with 10 sells
+        for i in 0..10 {
+            tracker.update(false, 1000.0, i as u64);
+        }
+        assert_eq!(tracker.window_size(), 10);
+        assert!((tracker.imbalance() - (-1.0)).abs() < 1e-10);
+
+        // Add 10 buys — sells should be evicted
+        for i in 10..20 {
+            tracker.update(true, 1000.0, i as u64);
+        }
+        assert_eq!(tracker.window_size(), 10);
+        assert!((tracker.imbalance() - 1.0).abs() < 1e-10, "after eviction imbalance={}", tracker.imbalance());
+    }
+
+    #[test]
+    fn test_trade_imbalance_disabled_max_size_zero() {
+        let mut tracker = TradeImbalanceTracker::new(0);
+        tracker.update(true, 1000.0, 0);
+        tracker.update(true, 1000.0, 1);
+        assert_eq!(tracker.window_size(), 0);
+        assert!((tracker.imbalance() - 0.0).abs() < 1e-10);
     }
 
     #[test]

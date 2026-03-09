@@ -9,7 +9,7 @@ use cm_market_data::orderbook::OrderBook;
 use crate::context::TradingContext;
 use crate::traits::{Fill, Strategy, StrategyParams};
 
-use super::signals::{Ema, TradeFlowSignal, VolatilityTracker, VpinTracker};
+use super::signals::{Ema, TradeFlowSignal, TradeImbalanceTracker, VolatilityTracker, VpinTracker};
 
 /// ML integration mode.
 ///
@@ -78,8 +78,24 @@ pub struct AdaptiveMarketMaker {
     /// Per-symbol ML overrides: symbol → (mode, factor, threshold).
     ml_overrides: HashMap<String, (MlMode, f64, f64)>,
 
+    // ── Trade imbalance filter ──
+    imbalance_tracker: TradeImbalanceTracker,
+    imbalance_threshold: f64, // |imbalance| above which spread adjustment fires
+    imbalance_factor: f64,    // spread multiplier on the vulnerable side; 0 = disabled
+
     // ── Recent mid history for return calculation ──
     recent_mids: VecDeque<f64>,
+
+    // ── Position flush ──
+    flush_interval_ticks: u64, // 0 = disabled
+    flush_threshold: f64,      // min |position| to trigger flush
+    flush_tick_counter: u64,   // internal counter, incremented each on_timer call
+
+    // ── Timer state (set from on_book_update) ──
+    // exchange/symbol set from on_book_update — assumes single-symbol usage
+    last_mid: f64,
+    last_exchange: Option<Exchange>,
+    last_symbol: Option<Symbol>,
 
     // ── Quoting state ──
     last_quoted_mid: Option<f64>,
@@ -114,6 +130,15 @@ impl AdaptiveMarketMaker {
     const DEFAULT_SIZE_DECAY_POWER: f64 = 2.0;
     const DEFAULT_REDUCE_BOOST: f64 = 0.5;
 
+    // Flush defaults
+    const DEFAULT_FLUSH_INTERVAL_TICKS: u64 = 0;
+    const DEFAULT_FLUSH_THRESHOLD: f64 = 0.0;
+
+    // Trade imbalance defaults
+    const DEFAULT_IMBALANCE_WINDOW: usize = 0; // 0 = disabled
+    const DEFAULT_IMBALANCE_THRESHOLD: f64 = 0.5;
+    const DEFAULT_IMBALANCE_FACTOR: f64 = 0.0; // 0 = disabled
+
     // ML defaults
     const DEFAULT_ML_FACTOR: f64 = 1.0;
     const DEFAULT_ML_THRESHOLD: f64 = 0.05; // dead zone: ignore |signal| < threshold
@@ -137,6 +162,10 @@ impl AdaptiveMarketMaker {
             .get_i64("vpin_n_buckets")
             .map(|v| v.max(1) as usize)
             .unwrap_or(Self::DEFAULT_VPIN_N_BUCKETS);
+        let imbalance_window = params
+            .get_i64("imbalance_window")
+            .map(|v| v.max(0) as usize)
+            .unwrap_or(Self::DEFAULT_IMBALANCE_WINDOW);
 
         Self {
             base_spread_bps: params
@@ -218,6 +247,24 @@ impl AdaptiveMarketMaker {
                 .unwrap_or(Self::DEFAULT_ML_MODE),
             ml_overrides: Self::parse_ml_overrides(params),
             recent_mids: VecDeque::with_capacity(32),
+            flush_interval_ticks: params
+                .get_i64("flush_interval_ticks")
+                .map(|v| v.max(0) as u64)
+                .unwrap_or(Self::DEFAULT_FLUSH_INTERVAL_TICKS),
+            flush_threshold: params
+                .get_f64("flush_threshold")
+                .unwrap_or(Self::DEFAULT_FLUSH_THRESHOLD),
+            flush_tick_counter: 0,
+            imbalance_tracker: TradeImbalanceTracker::new(imbalance_window),
+            imbalance_threshold: params
+                .get_f64("imbalance_threshold")
+                .unwrap_or(Self::DEFAULT_IMBALANCE_THRESHOLD),
+            imbalance_factor: params
+                .get_f64("imbalance_factor")
+                .unwrap_or(Self::DEFAULT_IMBALANCE_FACTOR),
+            last_mid: 0.0,
+            last_exchange: None,
+            last_symbol: None,
             last_quoted_mid: None,
             needs_requote: false,
         }
@@ -302,6 +349,11 @@ impl Strategy for AdaptiveMarketMaker {
 
         let exchange = book.exchange();
         let symbol = book.symbol().clone();
+
+        // Store for on_timer use.
+        self.last_mid = mid;
+        self.last_exchange = Some(exchange);
+        self.last_symbol = Some(symbol.clone());
 
         // 3. Cancel all existing orders.
         // Note: we use cancel_all because submit_order() doesn't return OrderIds,
@@ -497,12 +549,30 @@ impl Strategy for AdaptiveMarketMaker {
             ask_size = 0.0; // at/beyond max short, don't sell more
         }
 
-        // 7. Submit quotes around reservation_price.
+        // 7. Compute trade imbalance asymmetric spread adjustment.
+        // Buy pressure → widen ask (raise ask, adversely selecting buy aggressor).
+        // Sell pressure → widen bid (lower bid, adversely selecting sell aggressor).
+        let (imb_bid_extra, imb_ask_extra) =
+            if self.imbalance_factor > 0.0 && self.imbalance_tracker.window_size() > 0 {
+                let imb = self.imbalance_tracker.imbalance();
+                if imb > self.imbalance_threshold {
+                    (0.0, self.imbalance_factor * imb * half_spread)
+                } else if imb < -self.imbalance_threshold {
+                    (self.imbalance_factor * imb.abs() * half_spread, 0.0)
+                } else {
+                    (0.0, 0.0)
+                }
+            } else {
+                (0.0, 0.0)
+            };
+
+        // 8. Submit quotes around reservation_price.
         for level in 0..self.num_levels {
             let level_offset = half_spread * level as f64;
 
             if bid_size > 1e-8 {
-                let bid = reservation_price - half_spread - level_offset - ml_bid_extra;
+                let bid =
+                    reservation_price - half_spread - level_offset - ml_bid_extra - imb_bid_extra;
                 ctx.submit_order(
                     exchange,
                     symbol.clone(),
@@ -514,7 +584,8 @@ impl Strategy for AdaptiveMarketMaker {
             }
 
             if ask_size > 1e-8 {
-                let ask = reservation_price + half_spread + level_offset + ml_ask_extra;
+                let ask =
+                    reservation_price + half_spread + level_offset + ml_ask_extra + imb_ask_extra;
                 ctx.submit_order(
                     exchange,
                     symbol.clone(),
@@ -536,6 +607,8 @@ impl Strategy for AdaptiveMarketMaker {
         let is_buy = trade.side == Side::Buy;
         self.trade_flow.update(is_buy, notional);
         self.vpin_tracker.update(is_buy, notional);
+        self.imbalance_tracker
+            .update(is_buy, notional, trade.timestamp.as_nanos());
     }
 
     fn on_fill(&mut self, _ctx: &mut TradingContext, fill: &Fill) {
@@ -551,7 +624,55 @@ impl Strategy for AdaptiveMarketMaker {
         );
     }
 
-    fn on_timer(&mut self, _ctx: &mut TradingContext, _timestamp: Timestamp) {}
+    fn on_timer(&mut self, ctx: &mut TradingContext, _timestamp: Timestamp) {
+        self.flush_tick_counter = self.flush_tick_counter.wrapping_add(1);
+
+        // Disabled when interval=0.
+        if self.flush_interval_ticks == 0 {
+            return;
+        }
+        // Not yet time to flush.
+        if !self
+            .flush_tick_counter
+            .is_multiple_of(self.flush_interval_ticks)
+        {
+            return;
+        }
+
+        // Need exchange/symbol/mid from last on_book_update.
+        let (exchange, symbol) = match (&self.last_exchange, &self.last_symbol) {
+            (Some(e), Some(s)) => (*e, s.clone()),
+            _ => return,
+        };
+        if self.last_mid <= 0.0 {
+            return;
+        }
+
+        let net_pos = ctx.net_position(&exchange, &symbol);
+        if net_pos.abs() <= self.flush_threshold {
+            return;
+        }
+
+        // Submit market-crossing flush order. Pricing above mid for sell (buy trades at ask
+        // sweep through it) and below mid for buy (sell trades at bid sweep through it).
+        let (side, flush_price) = if net_pos > 0.0 {
+            (Side::Sell, self.last_mid * 1.0001)
+        } else {
+            (Side::Buy, self.last_mid * 0.9999)
+        };
+
+        // Limit (not PostOnly): flush must execute as taker to cross spread
+        ctx.submit_order(
+            exchange,
+            symbol,
+            side,
+            OrderType::Limit,
+            Price::from(flush_price),
+            Quantity::from(net_pos.abs()),
+        );
+
+        self.needs_requote = true;
+    }
 
     fn on_params_update(&mut self, params: &StrategyParams) {
         if let Some(v) = params.get_f64("base_spread_bps") {
@@ -613,6 +734,21 @@ impl Strategy for AdaptiveMarketMaker {
         }
         if params.get_object("ml_overrides").is_some() {
             self.ml_overrides = Self::parse_ml_overrides(params);
+        }
+        if let Some(v) = params.get_i64("flush_interval_ticks") {
+            self.flush_interval_ticks = v.max(0) as u64;
+        }
+        if let Some(v) = params.get_f64("flush_threshold") {
+            self.flush_threshold = v;
+        }
+        if let Some(v) = params.get_i64("imbalance_window") {
+            self.imbalance_tracker = TradeImbalanceTracker::new(v.max(0) as usize);
+        }
+        if let Some(v) = params.get_f64("imbalance_threshold") {
+            self.imbalance_threshold = v;
+        }
+        if let Some(v) = params.get_f64("imbalance_factor") {
+            self.imbalance_factor = v;
         }
         self.last_quoted_mid = None;
     }
@@ -930,6 +1066,229 @@ mod tests {
         assert_eq!(strat.name(), "adaptive_mm");
     }
 
+    // ── Flush tests ──────────────────────────────────────────────────────────
+
+    fn make_flush_params(interval: i64, threshold: f64) -> StrategyParams {
+        StrategyParams {
+            params: serde_json::json!({
+                "flush_interval_ticks": interval,
+                "flush_threshold": threshold,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_on_timer_noop_when_disabled() {
+        // Default flush_interval_ticks=0 → disabled; no flush order submitted
+        let mut strat = AdaptiveMarketMaker::from_params(&default_params());
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let submits: Vec<_> = ctx
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        assert_eq!(submits.len(), 0, "disabled flush should produce no orders");
+    }
+
+    #[test]
+    fn test_on_timer_submits_sell_when_long() {
+        // flush_interval_ticks=1 → flush every tick; long position → sell order
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(1, 0.0));
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(0.05); // long
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let actions = ctx.drain_actions();
+        let submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        assert_eq!(
+            submits.len(),
+            1,
+            "long position should produce one flush order"
+        );
+        if let crate::context::OrderAction::Submit { side, .. } = submits[0] {
+            assert_eq!(*side, Side::Sell, "flush order for long should be a sell");
+        }
+    }
+
+    #[test]
+    fn test_on_timer_submits_buy_when_short() {
+        // flush_interval_ticks=1 → flush every tick; short position → buy order
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(1, 0.0));
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(-0.05); // short
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let actions = ctx.drain_actions();
+        let submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        assert_eq!(
+            submits.len(),
+            1,
+            "short position should produce one flush order"
+        );
+        if let crate::context::OrderAction::Submit { side, .. } = submits[0] {
+            assert_eq!(*side, Side::Buy, "flush order for short should be a buy");
+        }
+    }
+
+    #[test]
+    fn test_on_timer_flush_sell_price_above_mid() {
+        // Sell flush must be priced above mid so buy trades sweep through it in queue model
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(1, 0.0));
+        let book = make_book(50000.0, 50001.0); // mid = 50000.5
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let sell_price = ctx.drain_actions().into_iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit {
+                side: Side::Sell,
+                price,
+                ..
+            } => Some(price.to_f64()),
+            _ => None,
+        });
+        let mid = 50000.5;
+        let price = sell_price.expect("no sell order found");
+        assert!(
+            price > mid,
+            "sell flush price {price} should be above mid {mid}"
+        );
+    }
+
+    #[test]
+    fn test_on_timer_flush_buy_price_below_mid() {
+        // Buy flush must be priced below mid so sell trades sweep through it in queue model
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(1, 0.0));
+        let book = make_book(50000.0, 50001.0); // mid = 50000.5
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(-0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let buy_price = ctx.drain_actions().into_iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit {
+                side: Side::Buy,
+                price,
+                ..
+            } => Some(price.to_f64()),
+            _ => None,
+        });
+        let mid = 50000.5;
+        let price = buy_price.expect("no buy order found");
+        assert!(
+            price < mid,
+            "buy flush price {price} should be below mid {mid}"
+        );
+    }
+
+    #[test]
+    fn test_on_timer_respects_interval() {
+        // flush_interval_ticks=3 → flush only on ticks 3, 6, 9...
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(3, 0.0));
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        // Tick 1: no flush
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1));
+        assert_eq!(
+            ctx.drain_actions()
+                .iter()
+                .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+                .count(),
+            0,
+            "tick 1 should not flush"
+        );
+
+        // Tick 2: no flush
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(2));
+        assert_eq!(
+            ctx.drain_actions()
+                .iter()
+                .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+                .count(),
+            0,
+            "tick 2 should not flush"
+        );
+
+        // Tick 3: flush fires
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(3));
+        assert_eq!(
+            ctx.drain_actions()
+                .iter()
+                .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+                .count(),
+            1,
+            "tick 3 should flush"
+        );
+    }
+
+    #[test]
+    fn test_on_timer_respects_threshold() {
+        // flush_threshold=0.1 → position=0.05 < threshold → no flush
+        let mut strat = AdaptiveMarketMaker::from_params(&make_flush_params(1, 0.1));
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(0.05); // below threshold
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let submits: Vec<_> = ctx
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        assert_eq!(
+            submits.len(),
+            0,
+            "position below threshold should not trigger flush"
+        );
+    }
+
+    #[test]
+    fn test_on_timer_negative_interval_disabled() {
+        // Negative flush_interval_ticks param → clamps to 0 → disabled
+        let params = StrategyParams {
+            params: serde_json::json!({ "flush_interval_ticks": -1 }),
+        };
+        let mut strat = AdaptiveMarketMaker::from_params(&params);
+        let book = make_book(50000.0, 50001.0);
+        let mut setup_ctx = make_context();
+        strat.on_book_update(&mut setup_ctx, &book);
+
+        let mut ctx = make_context_with_position(0.05);
+        strat.on_timer(&mut ctx, Timestamp::from_millis(1000));
+        let submits: Vec<_> = ctx
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .collect();
+        assert_eq!(
+            submits.len(),
+            0,
+            "negative flush_interval_ticks should be treated as disabled (0)"
+        );
+    }
+
     #[test]
     fn test_on_params_update() {
         let mut strat = AdaptiveMarketMaker::from_params(&default_params());
@@ -1039,6 +1398,151 @@ mod tests {
             "VPIN should widen spread: vpin ask {} should be > no-vpin ask {}",
             ask_vp,
             ask_no
+        );
+    }
+
+    /// Integration test: with imbalance_factor=1.0 and an all-buy window, the ask
+    /// side should be wider than the bid side (asymmetric spread).
+    /// Trade flow and book imbalance factors are set to 0 to isolate the imbalance effect.
+    #[test]
+    fn test_imbalance_factor_widens_ask_on_buy_pressure() {
+        let params = StrategyParams {
+            params: serde_json::json!({
+                "imbalance_window": 50,
+                "imbalance_threshold": 0.5,
+                "imbalance_factor": 1.0,
+                "trade_flow_factor": 0.0,      // isolate imbalance effect
+                "book_imbalance_factor": 0.0,  // isolate imbalance effect
+                "reprice_threshold_bps": 0.0, // always requote
+                "base_spread_bps": 10.0,
+                "risk_aversion": 0.3,
+                "fill_intensity": 1.5,
+                "time_horizon": 1.0,
+            }),
+        };
+
+        let mut strat = AdaptiveMarketMaker::from_params(&params);
+        let book = make_book(2000.0, 2001.0);
+        let mid = 2000.5;
+
+        // Flood the imbalance window with buy trades
+        for i in 0..50_u64 {
+            let trade = Trade {
+                exchange: Exchange::Binance,
+                symbol: Symbol::new("BTCUSDT"),
+                price: Price::from(mid),
+                quantity: Quantity::from(0.1),
+                side: Side::Buy,
+                timestamp: Timestamp::from_millis(i + 1),
+                trade_id: i.to_string(),
+            };
+            strat.on_trade(&mut make_context(), &trade);
+        }
+
+        // Get quotes after all-buy imbalance
+        let mut ctx = make_context();
+        strat.on_book_update(&mut ctx, &book);
+        let actions = ctx.drain_actions();
+
+        let bid_price = actions
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Buy => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no bid submitted");
+        let ask_price = actions
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no ask submitted");
+
+        let bid_dist = mid - bid_price;
+        let ask_dist = ask_price - mid;
+        eprintln!("mid={mid:.4}, bid={bid_price:.4} (dist={bid_dist:.4}), ask={ask_price:.4} (dist={ask_dist:.4})");
+        assert!(
+            ask_dist > bid_dist,
+            "buy pressure should widen ask: ask_dist={:.4} should be > bid_dist={:.4}",
+            ask_dist,
+            bid_dist
+        );
+    }
+
+    /// Integration test: with imbalance_factor=0.0, the spread is symmetric regardless
+    /// of window contents (backward compatibility — disabled by default).
+    /// Trade flow and book imbalance factors are set to 0 to isolate the imbalance effect.
+    #[test]
+    fn test_imbalance_factor_zero_produces_symmetric_spread() {
+        let params = StrategyParams {
+            params: serde_json::json!({
+                "imbalance_window": 50,
+                "imbalance_threshold": 0.5,
+                "imbalance_factor": 0.0, // disabled
+                "trade_flow_factor": 0.0,      // isolate imbalance effect
+                "book_imbalance_factor": 0.0,  // isolate imbalance effect
+                "reprice_threshold_bps": 0.0,
+                "base_spread_bps": 10.0,
+                "risk_aversion": 0.3,
+                "fill_intensity": 1.5,
+                "time_horizon": 1.0,
+            }),
+        };
+
+        let mut strat = AdaptiveMarketMaker::from_params(&params);
+        let book = make_book(2000.0, 2001.0);
+        let mid = 2000.5;
+
+        // Flood with buy trades — imbalance_factor=0 should ignore this
+        for i in 0..50_u64 {
+            let trade = Trade {
+                exchange: Exchange::Binance,
+                symbol: Symbol::new("BTCUSDT"),
+                price: Price::from(mid),
+                quantity: Quantity::from(0.1),
+                side: Side::Buy,
+                timestamp: Timestamp::from_millis(i + 1),
+                trade_id: i.to_string(),
+            };
+            strat.on_trade(&mut make_context(), &trade);
+        }
+
+        let mut ctx = make_context();
+        strat.on_book_update(&mut ctx, &book);
+        let actions = ctx.drain_actions();
+
+        let bid_price = actions
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Buy => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no bid submitted");
+        let ask_price = actions
+            .iter()
+            .find_map(|a| match a {
+                crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => {
+                    Some(price.to_f64())
+                }
+                _ => None,
+            })
+            .expect("no ask submitted");
+
+        let bid_dist = mid - bid_price;
+        let ask_dist = ask_price - mid;
+        eprintln!("factor=0 mid={mid:.4}, bid_dist={bid_dist:.4}, ask_dist={ask_dist:.4}");
+        assert!(
+            (ask_dist - bid_dist).abs() < 1e-8,
+            "imbalance_factor=0 should produce symmetric spread: ask_dist={:.4}, bid_dist={:.4}",
+            ask_dist,
+            bid_dist
         );
     }
 }

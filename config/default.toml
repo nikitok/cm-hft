@@ -45,6 +45,7 @@ flush_interval_ms = 1000
 [trading]
 mode = "paper"
 strategy = "simple_mm"
+strategy_params = ''
 
 [paper]
 latency_ms = 1

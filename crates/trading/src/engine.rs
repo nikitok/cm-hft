@@ -187,7 +187,7 @@ impl TradingEngine {
         let registry = default_registry();
         let strategy_name = &config.trading.strategy;
         let params = StrategyParams {
-            params: serde_json::json!({}),
+            params: parse_strategy_params(&config.trading.strategy_params),
         };
         let strategy = registry.create(strategy_name, &params).ok_or_else(|| {
             anyhow::anyhow!(
@@ -332,5 +332,42 @@ impl TradingEngine {
 
         tracing::info!("engine stopped");
         Ok(())
+    }
+}
+
+/// Parse a strategy_params JSON string into a [`serde_json::Value`].
+/// Returns an empty object on empty input or parse error.
+pub(crate) fn parse_strategy_params(raw: &str) -> serde_json::Value {
+    if raw.is_empty() {
+        return serde_json::json!({});
+    }
+    serde_json::from_str(raw).unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e,
+            raw = %raw,
+            "invalid strategy_params JSON, using defaults"
+        );
+        serde_json::json!({})
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_strategy_params_empty_string() {
+        assert_eq!(parse_strategy_params(""), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parse_strategy_params_invalid_json_falls_back_to_empty() {
+        assert_eq!(parse_strategy_params("{bad json"), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parse_strategy_params_valid_json() {
+        let result = parse_strategy_params(r#"{"reprice_threshold_bps": 12.0}"#);
+        assert_eq!(result["reprice_threshold_bps"], 12.0_f64);
     }
 }

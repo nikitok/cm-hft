@@ -8,8 +8,9 @@ metadata:
     exchange: bybit
 data:
   RECORD_EXCHANGE: "bybit"
-  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT"
+  RECORD_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,BNBUSDT"
   RECORD_DURATION: "70m"
+  RECORD_WS_URL: "wss://stream.bybit.com/v5/public/linear"
   S3_BUCKET: "cm-hft"
   S3_PREFIX: "recordings/bybit"
   S3_ENDPOINT: "https://s3.eu-west-1.amazonaws.com"

@@ -67,6 +67,11 @@ struct Args {
     /// Events outside [HH:00, HH+1:00) are discarded.
     #[arg(long, default_value_t = false)]
     hour_align: bool,
+
+    /// WebSocket URL override for the exchange (e.g. wss://stream.bybit.com/v5/public/linear).
+    /// Falls back to RECORD_WS_URL env var, then exchange default.
+    #[arg(long)]
+    ws_url: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {
@@ -297,6 +302,12 @@ async fn main() -> Result<()> {
     // Shutdown signal.
     let shutdown = tokio_util::sync::CancellationToken::new();
 
+    // Resolve WS URL: --ws-url arg → RECORD_WS_URL env var → exchange default.
+    let resolved_ws_url = args
+        .ws_url
+        .clone()
+        .or_else(|| std::env::var("RECORD_WS_URL").ok());
+
     // Spawn exchange WS client.
     let symbols_for_ws = args.symbols.clone();
     let ws_handle = if exchange == "binance" {
@@ -305,7 +316,16 @@ async fn main() -> Result<()> {
             run_binance_ws(symbols_for_ws, book_tx, trade_tx, shutdown_ws).await;
         })
     } else {
-        let client = BybitWsClient::new(BybitConfig::default(), symbols_for_ws);
+        // Bybit: use resolved WS URL if provided, otherwise let BybitConfig resolve to
+        // wss://stream.bybit.com/v5/public/linear (production linear endpoint).
+        let bybit_config = BybitConfig {
+            ws_url: resolved_ws_url.clone(),
+            ..BybitConfig::default()
+        };
+        if let Some(url) = &resolved_ws_url {
+            tracing::info!(ws_url = %url, "Bybit recorder using custom WS URL");
+        }
+        let client = BybitWsClient::new(bybit_config, symbols_for_ws);
         tokio::spawn(async move {
             if let Err(e) = client.run(book_tx, trade_tx).await {
                 tracing::error!(error = %e, "Bybit WS client error");

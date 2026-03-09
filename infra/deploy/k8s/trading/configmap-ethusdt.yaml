@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-hft-trading-ethusdt
+  namespace: cm
+  labels:
+    app: cm-hft-trading
+    symbol: ethusdt
+data:
+  # Strategy-specific parameters for ETHUSDT adaptive_mm deployment.
+  # reprice_threshold_bps=12: reduces order count by ~52% vs 1.5bps baseline
+  # (validated by NOV-13 sweep: rank #1 on Calmar, -52% orders, no fill impact).
+  CM_HFT_TRADING__STRATEGY_PARAMS: '{"reprice_threshold_bps": 12.0}'
+  CM_HFT_MARKET_DATA__SYMBOLS: '["ETHUSDT"]'
+  CM_HFT_TRADING__STRATEGY: adaptive_mm

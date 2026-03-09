@@ -195,6 +195,10 @@ pub struct TradingConfig {
     pub mode: TradingMode,
     /// Strategy identifier to run.
     pub strategy: String,
+    /// Strategy parameters as a JSON string. Empty string = use strategy defaults.
+    /// Override per deployment via `CM_HFT_TRADING__STRATEGY_PARAMS` env var.
+    #[serde(default)]
+    pub strategy_params: String,
 }
 
 /// Paper-trading simulation parameters.
@@ -286,6 +290,7 @@ impl AppConfig {
             // Trading
             .set_default("trading.mode", "paper")?
             .set_default("trading.strategy", "simple_mm")?
+            .set_default("trading.strategy_params", "")?
             // Paper trading
             .set_default("paper.latency_ms", 1i64)?
             .set_default("paper.maker_fee", -0.0001)?
@@ -545,5 +550,47 @@ strategy = "arb_v2"
         assert_eq!(cfg.binance.api_secret, "bn_sec_456");
 
         clear_env();
+    }
+
+    #[test]
+    fn test_strategy_params_default_empty() {
+        let _lock = lock_env();
+        clear_env();
+
+        let cfg = AppConfig::load(None).expect("load defaults");
+        assert_eq!(cfg.trading.strategy_params, "");
+    }
+
+    #[test]
+    fn test_strategy_params_from_env() {
+        let _lock = lock_env();
+        clear_env();
+        std::env::set_var(
+            "CM_HFT_TRADING__STRATEGY_PARAMS",
+            r#"{"reprice_threshold_bps": 12.0}"#,
+        );
+
+        let cfg = AppConfig::load(None).expect("load with strategy_params env");
+        assert_eq!(cfg.trading.strategy_params, r#"{"reprice_threshold_bps": 12.0}"#);
+
+        std::env::remove_var("CM_HFT_TRADING__STRATEGY_PARAMS");
+    }
+
+    #[test]
+    fn test_strategy_params_from_toml() {
+        let _lock = lock_env();
+        clear_env();
+
+        let (_f, path) = write_temp_toml(
+            r#"
+[trading]
+mode = "paper"
+strategy = "adaptive_mm"
+strategy_params = '{"reprice_threshold_bps": 12.0}'
+"#,
+        );
+
+        let cfg = AppConfig::load(Some(path)).expect("load from toml with strategy_params");
+        assert_eq!(cfg.trading.strategy_params, r#"{"reprice_threshold_bps": 12.0}"#);
     }
 }
