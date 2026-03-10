@@ -87,6 +87,10 @@ pub struct AdaptiveMarketMaker {
 
     // ── Regime detector ──
     regime_detector: RegimeDetector,
+    regime_window_secs: u64,
+    regime_drift_enter: f64,
+    regime_drift_exit: f64,
+    regime_max_mult: f64,
     regime_max_combined_mult: f64, // cap on vpin_multiplier * regime_mult
 
     // ── Recent mid history for return calculation ──
@@ -294,6 +298,10 @@ impl AdaptiveMarketMaker {
                 regime_drift_exit,
                 regime_max_mult,
             ),
+            regime_window_secs,
+            regime_drift_enter,
+            regime_drift_exit,
+            regime_max_mult,
             regime_max_combined_mult: params
                 .get_f64("regime_max_combined_mult")
                 .unwrap_or(Self::DEFAULT_REGIME_MAX_COMBINED_MULT),
@@ -542,8 +550,7 @@ impl Strategy for AdaptiveMarketMaker {
             let regime_mult = self.regime_detector.spread_multiplier();
 
             // Floor at min_spread, then apply combined multiplier (capped to avoid excessive width).
-            let combined_mult =
-                (vpin_multiplier * regime_mult).min(self.regime_max_combined_mult);
+            let combined_mult = (vpin_multiplier * regime_mult).min(self.regime_max_combined_mult);
             half_spread = (as_spread / 2.0).max(min_spread_floor) * combined_mult;
 
             // A-S reservation price with NORMALIZED inventory.
@@ -795,25 +802,31 @@ impl Strategy for AdaptiveMarketMaker {
         }
         // Regime detector: reconstruct on any param change (changing window_secs requires
         // clearing the stale VecDeque — same pattern as imbalance_tracker above).
+        // Fall back to current runtime values (self.regime_*), not compile-time defaults,
+        // so partial updates preserve non-provided params.
         let regime_changed = params.get_i64("regime_window_secs").is_some()
             || params.get_f64("regime_drift_enter_bps_hr").is_some()
             || params.get_f64("regime_drift_exit_bps_hr").is_some()
             || params.get_f64("regime_max_mult").is_some();
         if regime_changed {
-            let window_secs = params
-                .get_i64("regime_window_secs")
-                .map(|v| v.max(0) as u64)
-                .unwrap_or(Self::DEFAULT_REGIME_WINDOW_SECS);
-            let drift_enter = params
-                .get_f64("regime_drift_enter_bps_hr")
-                .unwrap_or(Self::DEFAULT_REGIME_DRIFT_ENTER_BPS_HR);
-            let drift_exit = params
-                .get_f64("regime_drift_exit_bps_hr")
-                .unwrap_or(Self::DEFAULT_REGIME_DRIFT_EXIT_BPS_HR);
-            let max_mult = params
-                .get_f64("regime_max_mult")
-                .unwrap_or(Self::DEFAULT_REGIME_MAX_MULT);
-            self.regime_detector = RegimeDetector::new(window_secs, drift_enter, drift_exit, max_mult);
+            if let Some(v) = params.get_i64("regime_window_secs") {
+                self.regime_window_secs = v.max(0) as u64;
+            }
+            if let Some(v) = params.get_f64("regime_drift_enter_bps_hr") {
+                self.regime_drift_enter = v;
+            }
+            if let Some(v) = params.get_f64("regime_drift_exit_bps_hr") {
+                self.regime_drift_exit = v;
+            }
+            if let Some(v) = params.get_f64("regime_max_mult") {
+                self.regime_max_mult = v;
+            }
+            self.regime_detector = RegimeDetector::new(
+                self.regime_window_secs,
+                self.regime_drift_enter,
+                self.regime_drift_exit,
+                self.regime_max_mult,
+            );
         }
         if let Some(v) = params.get_f64("regime_max_combined_mult") {
             self.regime_max_combined_mult = v;
@@ -1686,8 +1699,9 @@ mod tests {
         params_regime["regime_window_secs"] = serde_json::json!(60_i64);
 
         let mut strat_no = AdaptiveMarketMaker::from_params(&StrategyParams { params: params_no });
-        let mut strat_regime =
-            AdaptiveMarketMaker::from_params(&StrategyParams { params: params_regime });
+        let mut strat_regime = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: params_regime,
+        });
         let ns_per_sec = 1_000_000_000u64;
 
         // Feed the SAME trending ticks to both: 50000 → 50010 over 60s = 120 bps/hr
@@ -1753,8 +1767,9 @@ mod tests {
         params_regime["regime_window_secs"] = serde_json::json!(60_i64);
 
         let mut strat_no = AdaptiveMarketMaker::from_params(&StrategyParams { params: params_no });
-        let mut strat_regime =
-            AdaptiveMarketMaker::from_params(&StrategyParams { params: params_regime });
+        let mut strat_regime = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: params_regime,
+        });
         let ns_per_sec = 1_000_000_000u64;
 
         // Feed identical flat prices to both strategies for 60 seconds
@@ -1793,39 +1808,83 @@ mod tests {
     }
 
     /// on_params_update with new regime params reconstructs RegimeDetector (no stale entries).
+    /// Uses non-default values (drift_enter=200, drift_exit=80) so partial update cannot
+    /// accidentally pass by falling back to defaults that equal the original values.
     #[test]
     fn test_regime_params_update_reconstructs_detector() {
         let params = StrategyParams {
             params: serde_json::json!({
                 "regime_window_secs": 60,
-                "regime_drift_enter_bps_hr": 100.0,
-                "regime_drift_exit_bps_hr": 50.0,
+                "regime_drift_enter_bps_hr": 200.0,  // non-default (default=100)
+                "regime_drift_exit_bps_hr": 80.0,    // non-default (default=50)
                 "regime_max_mult": 3.0,
             }),
         };
         let mut strat = AdaptiveMarketMaker::from_params(&params);
         let ns_per_sec = 1_000_000_000u64;
 
-        // Feed trending ticks to enter trending regime
+        // Feed trending ticks: 50000 → 50030 over 60s.
+        // drift = 30/50000 * 10_000 = 6 bps; bps/hr = 6 * 60 = 360 bps/hr > 200 → enters trending.
         for i in 0..=10u64 {
             let t_ns = i * 6 * ns_per_sec;
-            let price = 50000.0 + i as f64;
+            let price = 50000.0 + i as f64 * 3.0;
             let mut c = TradingContext::new(vec![], vec![], Timestamp(t_ns));
             strat.last_quoted_mid = None;
             strat.on_book_update(&mut c, &make_book(price - 0.5, price + 0.5));
         }
-        assert!(strat.regime_detector.is_trending(), "should be trending before params update");
+        assert!(
+            strat.regime_detector.is_trending(),
+            "should be trending before params update; drift_bps_hr={}",
+            strat.regime_detector.drift_bps_hr()
+        );
 
-        // Update regime_window_secs — should reconstruct detector, clearing stale trending state
+        // Partial update: only change regime_window_secs — drift_enter/drift_exit/max_mult must
+        // be preserved from runtime state (200/80/3.0), not reset to compile-time defaults.
         let new_params = StrategyParams {
             params: serde_json::json!({ "regime_window_secs": 900 }),
         };
         strat.on_params_update(&new_params);
 
-        // After reconstruction, detector is fresh (no stale trending state)
+        // After reconstruction, detector is fresh (no stale trending state).
         assert!(
             !strat.regime_detector.is_trending(),
             "reconstructed detector should not carry over stale trending state"
+        );
+
+        // Verify non-provided params were preserved (not reset to defaults).
+        // Feed a price that would be trending at 150 bps/hr (> default 100, < our 200).
+        // With the preserved drift_enter=200, the detector stays FLAT.
+        // If it incorrectly reset to default drift_enter=100, it would enter trending.
+        let base_time_ns = 10 * 6 * ns_per_sec;
+        let base_price = 50010.0_f64;
+        // Seed the 900s window: feed 2 ticks spanning 900s with 150 bps/hr drift
+        // Drift = (end - start)/start * 10_000 = 0.0075 * 10_000 = 75 bps over window
+        // 75 bps / (900s / 3600s/hr) = 75 / 0.25 = 300 bps/hr — above both 100 and 200
+        // Instead use a mild drift: 25 bps over 900s = 25/(900/3600) = 100 bps/hr exactly
+        // (between drift_enter=200 default and our 200 is same — use 150 bps/hr instead)
+        // 150 bps/hr * (900/3600 hr) = 37.5 bps total drift → end = start * (1 + 37.5/10_000)
+        let end_price = base_price * (1.0 + 150.0 * (900.0 / 3600.0) / 10_000.0);
+        // Feed start tick
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(base_time_ns));
+        strat.last_quoted_mid = None;
+        strat.on_book_update(&mut c1, &make_book(base_price - 0.5, base_price + 0.5));
+        // Feed end tick (900s later)
+        let mut c2 =
+            TradingContext::new(vec![], vec![], Timestamp(base_time_ns + 900 * ns_per_sec));
+        strat.last_quoted_mid = None;
+        strat.on_book_update(&mut c2, &make_book(end_price - 0.5, end_price + 0.5));
+
+        // drift = 150 bps/hr. With preserved drift_enter=200 → NOT trending.
+        // If drift_enter was reset to default=100 → WOULD be trending. This assertion catches that.
+        assert!(
+            !strat.regime_detector.is_trending(),
+            "drift_enter must be preserved at 200 after partial update; 150 bps/hr should NOT trigger trending"
+        );
+        assert_eq!(strat.regime_window_secs, 900, "window_secs updated");
+        assert!(
+            (strat.regime_drift_enter - 200.0).abs() < 1e-10,
+            "drift_enter must be preserved at 200, got {}",
+            strat.regime_drift_enter
         );
     }
 
