@@ -10,7 +10,8 @@ use crate::context::TradingContext;
 use crate::traits::{Fill, Strategy, StrategyParams};
 
 use super::signals::{
-    Ema, RegimeDetector, TradeFlowSignal, TradeImbalanceTracker, VolatilityTracker, VpinTracker,
+    Ema, FastDriftSignal, RegimeDetector, TradeFlowSignal, TradeImbalanceTracker,
+    VolatilityTracker, VpinTracker,
 };
 
 /// ML integration mode.
@@ -92,6 +93,13 @@ pub struct AdaptiveMarketMaker {
     regime_drift_exit: f64,
     regime_max_mult: f64,
     regime_max_combined_mult: f64, // cap on vpin_multiplier * regime_mult
+    regime_flush_enabled: bool,    // flush position on flat→trending transition (NOV-21)
+    was_trending: bool,            // previous regime state for transition detection
+    regime_stop_quote: bool,       // cancel all and stop quoting when trending (NOV-23)
+
+    // ── Fast drift signal (NOV-22) ──
+    fast_drift: FastDriftSignal,
+    fast_drift_threshold_bps: f64, // |drift_bps| threshold to trigger stop-quoting
 
     // ── Recent mid history for return calculation ──
     recent_mids: VecDeque<f64>,
@@ -155,6 +163,10 @@ impl AdaptiveMarketMaker {
     const DEFAULT_REGIME_DRIFT_EXIT_BPS_HR: f64 = 50.0;
     const DEFAULT_REGIME_MAX_MULT: f64 = 3.0;
     const DEFAULT_REGIME_MAX_COMBINED_MULT: f64 = 5.0;
+    const DEFAULT_REGIME_FLUSH_ENABLED: bool = false;
+    const DEFAULT_REGIME_STOP_QUOTE: bool = false;
+    const DEFAULT_FAST_DRIFT_SPAN: usize = 0; // 0 = disabled
+    const DEFAULT_FAST_DRIFT_THRESHOLD_BPS: f64 = 50.0;
 
     // ML defaults
     const DEFAULT_ML_FACTOR: f64 = 1.0;
@@ -305,6 +317,22 @@ impl AdaptiveMarketMaker {
             regime_max_combined_mult: params
                 .get_f64("regime_max_combined_mult")
                 .unwrap_or(Self::DEFAULT_REGIME_MAX_COMBINED_MULT),
+            regime_flush_enabled: params
+                .get_bool("regime_flush_enabled")
+                .unwrap_or(Self::DEFAULT_REGIME_FLUSH_ENABLED),
+            was_trending: false,
+            regime_stop_quote: params
+                .get_bool("regime_stop_quote")
+                .unwrap_or(Self::DEFAULT_REGIME_STOP_QUOTE),
+            fast_drift: FastDriftSignal::new(
+                params
+                    .get_i64("fast_drift_span")
+                    .map(|v| v.max(0) as usize)
+                    .unwrap_or(Self::DEFAULT_FAST_DRIFT_SPAN),
+            ),
+            fast_drift_threshold_bps: params
+                .get_f64("fast_drift_threshold_bps")
+                .unwrap_or(Self::DEFAULT_FAST_DRIFT_THRESHOLD_BPS),
             last_mid: 0.0,
             last_exchange: None,
             last_symbol: None,
@@ -373,10 +401,60 @@ impl Strategy for AdaptiveMarketMaker {
             None => return,
         };
 
+        let exchange = book.exchange();
+        let symbol = book.symbol().clone();
+
         // 1. Update signals.
         self.vol_tracker.update(mid);
         self.regime_detector.update(mid, ctx.timestamp.as_nanos());
+        self.fast_drift.update(mid);
         let fair_value = self.fair_value_ema.update(mid);
+
+        // Always track last_mid/exchange/symbol here so on_timer has fresh data
+        // even during extended stop-quoting periods where the early return below
+        // would otherwise prevent these from being updated.
+        self.last_mid = mid;
+        self.last_exchange = Some(exchange);
+        self.last_symbol = Some(symbol.clone());
+
+        // 1a. Emergency position flush on flat→trending transition (NOV-21).
+        // Must run BEFORE the reprice gate so it fires on every tick where a
+        // regime transition occurs, regardless of price movement size.
+        let now_trending = self.regime_detector.is_trending();
+        if self.regime_flush_enabled && !self.was_trending && now_trending {
+            let net_pos = ctx.net_position(&exchange, &symbol);
+            if net_pos.abs() > 1e-8 {
+                let (side, flush_price) = if net_pos > 0.0 {
+                    (Side::Sell, mid * 1.0001)
+                } else {
+                    (Side::Buy, mid * 0.9999)
+                };
+                ctx.submit_order(
+                    exchange,
+                    symbol.clone(),
+                    side,
+                    OrderType::Limit,
+                    Price::from(flush_price),
+                    Quantity::from(net_pos.abs()),
+                );
+                self.needs_requote = true;
+            }
+        }
+        self.was_trending = now_trending;
+
+        // 1b. Stop-quoting mode (NOV-23): cancel all and skip quotes when trending
+        // or fast drift is above threshold. Must run BEFORE the reprice gate to
+        // guarantee stale order cancellation on every tick while active.
+        if self.regime_stop_quote
+            && (now_trending
+                || self
+                    .fast_drift
+                    .is_fast_trending(self.fast_drift_threshold_bps))
+        {
+            ctx.cancel_all(Some(exchange), Some(symbol.clone()));
+            self.last_quoted_mid = None; // force requote on resume
+            return;
+        }
 
         // 2. Check reprice threshold (bypass if fill triggered needs_requote).
         if !self.needs_requote {
@@ -390,14 +468,6 @@ impl Strategy for AdaptiveMarketMaker {
             }
         }
         self.needs_requote = false;
-
-        let exchange = book.exchange();
-        let symbol = book.symbol().clone();
-
-        // Store for on_timer use.
-        self.last_mid = mid;
-        self.last_exchange = Some(exchange);
-        self.last_symbol = Some(symbol.clone());
 
         // 3. Cancel all existing orders.
         // Note: we use cancel_all because submit_order() doesn't return OrderIds,
@@ -830,6 +900,18 @@ impl Strategy for AdaptiveMarketMaker {
         }
         if let Some(v) = params.get_f64("regime_max_combined_mult") {
             self.regime_max_combined_mult = v;
+        }
+        if let Some(v) = params.get_bool("regime_flush_enabled") {
+            self.regime_flush_enabled = v;
+        }
+        if let Some(v) = params.get_bool("regime_stop_quote") {
+            self.regime_stop_quote = v;
+        }
+        if let Some(v) = params.get_i64("fast_drift_span") {
+            self.fast_drift = FastDriftSignal::new(v.max(0) as usize);
+        }
+        if let Some(v) = params.get_f64("fast_drift_threshold_bps") {
+            self.fast_drift_threshold_bps = v;
         }
         self.last_quoted_mid = None;
     }
@@ -1963,6 +2045,486 @@ mod tests {
         assert!(
             effective_mult <= 5.01, // small tolerance for float rounding
             "combined multiplier should be capped at 5.0, got {effective_mult:.2}"
+        );
+    }
+
+    // ── Regime flush (NOV-21) tests ───────────────────────────────────────────
+
+    /// Helper: build a strategy with regime_flush_enabled=true and regime detector configured.
+    fn make_regime_flush_strat() -> AdaptiveMarketMaker {
+        AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_flush_enabled": true,
+                "reprice_threshold_bps": 0.0,
+            }),
+        })
+    }
+
+    #[test]
+    fn test_regime_flush_triggers_on_transition() {
+        let mut strat = make_regime_flush_strat();
+        let ns = 1_000_000_000u64;
+
+        // Step 1: seed regime with first tick (flat)
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+        assert!(!strat.regime_detector.is_trending(), "should start flat");
+
+        // Step 2: trigger regime transition (120 bps/hr uptrend)
+        let pos = Position {
+            exchange: Exchange::Binance,
+            symbol: Symbol::new("BTCUSDT"),
+            net_quantity: Quantity::from(0.1),
+            avg_entry_price: Price::from(1000.0),
+            realized_pnl: Price::zero(8),
+            fill_count: 1,
+        };
+        let mut c2 = TradingContext::new(vec![pos], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+
+        assert!(
+            strat.regime_detector.is_trending(),
+            "regime should be trending after 120 bps/hr; drift={}",
+            strat.regime_detector.drift_bps_hr()
+        );
+
+        // There should be a flush Submit (Limit) in the actions
+        let actions = c2.drain_actions();
+        let limit_submits: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { order_type, .. } if *order_type == OrderType::Limit))
+            .collect();
+        assert_eq!(
+            limit_submits.len(),
+            1,
+            "should submit exactly one flush order on regime transition; actions={actions:?}"
+        );
+    }
+
+    #[test]
+    fn test_regime_flush_disabled_by_default() {
+        // Default params — regime_flush_enabled=false → no flush even if trending
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                // regime_flush_enabled omitted (default false)
+                "reprice_threshold_bps": 0.0,
+            }),
+        });
+        let ns = 1_000_000_000u64;
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        let pos = Position {
+            exchange: Exchange::Binance,
+            symbol: Symbol::new("BTCUSDT"),
+            net_quantity: Quantity::from(0.1),
+            avg_entry_price: Price::from(1000.0),
+            realized_pnl: Price::zero(8),
+            fill_count: 1,
+        };
+        let mut c2 = TradingContext::new(vec![pos], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+
+        let limit_submits: Vec<_> = c2
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { order_type, .. } if *order_type == OrderType::Limit))
+            .collect();
+        assert_eq!(
+            limit_submits.len(),
+            0,
+            "regime_flush_enabled=false should produce no flush order"
+        );
+    }
+
+    #[test]
+    fn test_regime_flush_no_flush_on_trending_to_flat() {
+        let mut strat = make_regime_flush_strat();
+        let ns = 1_000_000_000u64;
+
+        // Establish trending
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+        let pos = Position {
+            exchange: Exchange::Binance,
+            symbol: Symbol::new("BTCUSDT"),
+            net_quantity: Quantity::from(0.1),
+            avg_entry_price: Price::from(1000.0),
+            realized_pnl: Price::zero(8),
+            fill_count: 1,
+        };
+        let mut c2 = TradingContext::new(vec![pos.clone()], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        let _ = c2.drain_actions(); // consume transition flush
+
+        // Advance time past window — regime exits trending
+        let mut c3 = TradingContext::new(vec![pos.clone()], vec![], Timestamp(130 * ns));
+        strat.on_book_update(&mut c3, &make_book(1000.1, 1000.3));
+
+        assert!(
+            !strat.regime_detector.is_trending(),
+            "should exit trending after window clears"
+        );
+
+        // No flush on trending→flat
+        let limit_submits: Vec<_> = c3
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { order_type, .. } if *order_type == OrderType::Limit))
+            .collect();
+        assert_eq!(
+            limit_submits.len(),
+            0,
+            "trending→flat should not trigger flush"
+        );
+    }
+
+    #[test]
+    fn test_regime_flush_no_flush_when_zero_position() {
+        let mut strat = make_regime_flush_strat();
+        let ns = 1_000_000_000u64;
+
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        // Transition to trending but with zero position
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+
+        let limit_submits: Vec<_> = c2
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { order_type, .. } if *order_type == OrderType::Limit))
+            .collect();
+        assert_eq!(
+            limit_submits.len(),
+            0,
+            "zero position should not trigger flush"
+        );
+    }
+
+    #[test]
+    fn test_regime_flush_fires_below_reprice_threshold() {
+        // reprice_threshold_bps=1000 (very high) — mid won't breach it between ticks.
+        // Flush must still fire on regime transition.
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_flush_enabled": true,
+                "reprice_threshold_bps": 1000.0, // very high — normal requote is suppressed
+            }),
+        });
+        let ns = 1_000_000_000u64;
+
+        // Seed with first tick
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        // Trigger transition: 120 bps/hr but only 2 bps price move (well below 1000 bps threshold)
+        let pos = Position {
+            exchange: Exchange::Binance,
+            symbol: Symbol::new("BTCUSDT"),
+            net_quantity: Quantity::from(0.1),
+            avg_entry_price: Price::from(1000.0),
+            realized_pnl: Price::zero(8),
+            fill_count: 1,
+        };
+        let mut c2 = TradingContext::new(vec![pos], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+
+        assert!(strat.regime_detector.is_trending());
+
+        let limit_submits: Vec<_> = c2
+            .drain_actions()
+            .into_iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { order_type, .. } if *order_type == OrderType::Limit))
+            .collect();
+        assert_eq!(
+            limit_submits.len(),
+            1,
+            "flush must fire even when mid < reprice_threshold_bps"
+        );
+    }
+
+    #[test]
+    fn test_regime_flush_one_shot() {
+        // Flush fires ONCE on flat→trending transition, not on subsequent trending ticks.
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_flush_enabled": true,
+            }),
+        });
+        let ns = 1_000_000_000u64;
+
+        // Seed first tick.
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        let pos = Position {
+            exchange: Exchange::Binance,
+            symbol: Symbol::new("BTCUSDT"),
+            net_quantity: Quantity::from(0.1),
+            avg_entry_price: Price::from(1000.0),
+            realized_pnl: Price::zero(8),
+            fill_count: 1,
+        };
+
+        // Transition tick — flush fires here.
+        let mut c2 = TradingContext::new(vec![pos.clone()], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let flush_count = c2
+            .drain_actions()
+            .into_iter()
+            .filter(|a| {
+                matches!(a, crate::context::OrderAction::Submit { order_type, .. }
+                    if *order_type == OrderType::Limit)
+            })
+            .count();
+        assert_eq!(flush_count, 1, "flush must fire on transition tick");
+
+        // Second tick: still trending, position still non-zero — flush must NOT fire again.
+        let mut c3 = TradingContext::new(vec![pos], vec![], Timestamp(61 * ns));
+        strat.on_book_update(&mut c3, &make_book(1000.2, 1000.4));
+        assert!(strat.regime_detector.is_trending());
+        let second_flush_count = c3
+            .drain_actions()
+            .into_iter()
+            .filter(|a| {
+                matches!(a, crate::context::OrderAction::Submit { order_type, .. }
+                    if *order_type == OrderType::Limit)
+            })
+            .count();
+        assert_eq!(
+            second_flush_count, 0,
+            "flush must NOT fire on second trending tick"
+        );
+    }
+
+    // ── Stop-quoting mode (NOV-23) tests ─────────────────────────────────────
+
+    fn count_submits(actions: &[crate::context::OrderAction]) -> usize {
+        actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::Submit { .. }))
+            .count()
+    }
+
+    fn count_cancel_alls(actions: &[crate::context::OrderAction]) -> usize {
+        actions
+            .iter()
+            .filter(|a| matches!(a, crate::context::OrderAction::CancelAll { .. }))
+            .count()
+    }
+
+    /// Helper: build strategy with stop-quoting enabled and regime detector configured.
+    fn make_stop_quote_strat() -> AdaptiveMarketMaker {
+        AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_stop_quote": true,
+                "reprice_threshold_bps": 0.0,
+                "trade_flow_factor": 0.0,
+                "book_imbalance_factor": 0.0,
+            }),
+        })
+    }
+
+    #[test]
+    fn test_stop_quote_no_orders_when_trending() {
+        let mut strat = make_stop_quote_strat();
+        let ns = 1_000_000_000u64;
+
+        // Seed with first tick
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        // Trigger trending (120 bps/hr). Check THIS tick — regime is trending
+        // and stop-quoting must suppress all quote submissions immediately.
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let actions = c2.drain_actions();
+        let submits = count_submits(&actions);
+        assert_eq!(
+            submits, 0,
+            "stop-quoting active on trending tick: no new orders, got {submits}"
+        );
+        // Only cancel_all should be present
+        assert!(
+            count_cancel_alls(&actions) >= 1,
+            "cancel_all must be issued"
+        );
+    }
+
+    #[test]
+    fn test_stop_quote_cancel_all_runs_while_trending() {
+        // cancel_all must fire even when stop-quoting is active (placed before reprice gate)
+        let mut strat = make_stop_quote_strat();
+        let ns = 1_000_000_000u64;
+
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        // The transition tick itself: stop-quoting fires, cancel_all runs
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let actions = c2.drain_actions();
+        assert!(
+            count_cancel_alls(&actions) >= 1,
+            "cancel_all must run when stop-quoting fires"
+        );
+    }
+
+    #[test]
+    fn test_stop_quote_resumes_after_trend_clears() {
+        let mut strat = make_stop_quote_strat();
+        let ns = 1_000_000_000u64;
+
+        // Seed + trend
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let _ = c2.drain_actions();
+
+        // Advance past window — trend clears
+        let mut c3 = TradingContext::new(vec![], vec![], Timestamp(130 * ns));
+        strat.on_book_update(&mut c3, &make_book(1000.1, 1000.3));
+        assert!(!strat.regime_detector.is_trending());
+
+        // Now quoting should resume
+        let actions = c3.drain_actions();
+        let submits = count_submits(&actions);
+        assert!(
+            submits >= 1,
+            "quoting should resume after trend clears, got {submits} submits"
+        );
+    }
+
+    #[test]
+    fn test_stop_quote_fast_drift_alone_triggers() {
+        // FastDriftSignal (not regime detector) should also trigger stop-quoting.
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 0,          // regime detector disabled
+                "regime_stop_quote": true,
+                "fast_drift_span": 3,             // very responsive
+                "fast_drift_threshold_bps": 5.0, // low threshold
+                "reprice_threshold_bps": 0.0,
+            }),
+        });
+
+        // Feed ticks with strong upward drift
+        let prices = [1000.0, 1001.0, 1002.0, 1003.0, 1004.0];
+        for (i, &price) in prices.iter().enumerate() {
+            let b = make_book(price - 0.5, price + 0.5);
+            strat.last_quoted_mid = None;
+            let ts = Timestamp::from_millis(i as u64 * 100);
+            let mut c = TradingContext::new(vec![], vec![], ts);
+            strat.on_book_update(&mut c, &b);
+            let _ = c.drain_actions();
+        }
+
+        // Fast drift should now be above threshold; regime detector is disabled
+        assert!(
+            strat.fast_drift.is_fast_trending(5.0),
+            "fast_drift should be above threshold: drift_bps={}",
+            strat.fast_drift.drift_bps()
+        );
+
+        // Next book update: stop-quoting should suppress new orders
+        strat.last_quoted_mid = None;
+        let mut ctx = TradingContext::new(vec![], vec![], Timestamp::from_millis(500));
+        strat.on_book_update(&mut ctx, &make_book(1004.5, 1005.5));
+        let actions = ctx.drain_actions();
+        assert_eq!(
+            count_submits(&actions),
+            0,
+            "fast drift alone should trigger stop-quoting"
+        );
+    }
+
+    #[test]
+    fn test_stop_quote_disabled_by_default() {
+        // Default params: regime_stop_quote=false → normal quoting even when trending
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "reprice_threshold_bps": 0.0,
+            }),
+        });
+        let ns = 1_000_000_000u64;
+
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let _ = c2.drain_actions();
+
+        // Still quotes because stop_quote is false
+        let mut c3 = TradingContext::new(vec![], vec![], Timestamp(61 * ns));
+        strat.on_book_update(&mut c3, &make_book(1000.1, 1000.3));
+        let submits = count_submits(&c3.drain_actions());
+        assert!(
+            submits >= 1,
+            "regime_stop_quote=false: should still quote while trending; got {submits}"
+        );
+    }
+
+    #[test]
+    fn test_stop_quote_cancel_all_fires_below_reprice_threshold() {
+        // Stop-quoting must cancel stale orders even when mid movement is below
+        // reprice_threshold_bps (normal cancel_all is gated by reprice guard).
+        // Verify: at the transition tick where mid moved only 2 bps (well below 1000 bps
+        // threshold), stop-quoting fires BEFORE the reprice gate and issues cancel_all.
+        let mut strat = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_stop_quote": true,
+                "reprice_threshold_bps": 1000.0, // very high — normal gate would suppress
+            }),
+        });
+        let ns = 1_000_000_000u64;
+
+        // Seed at t=0 (mid=1000.0). last_quoted_mid will be set.
+        let mut c1 = TradingContext::new(vec![], vec![], Timestamp(0));
+        strat.on_book_update(&mut c1, &make_book(999.9, 1000.1));
+
+        // Transition tick: mid moves from 1000.0 to 1000.2 (only 2 bps, << 1000 threshold).
+        // Without stop-quoting the reprice gate would block and cancel_all would NOT run.
+        // With stop-quoting placed before the gate, cancel_all must run.
+        let mut c2 = TradingContext::new(vec![], vec![], Timestamp(60 * ns));
+        strat.on_book_update(&mut c2, &make_book(1000.1, 1000.3));
+        assert!(strat.regime_detector.is_trending());
+        let actions = c2.drain_actions();
+        assert_eq!(
+            count_submits(&actions),
+            0,
+            "no new orders while stop-quoting"
+        );
+        assert!(
+            count_cancel_alls(&actions) >= 1,
+            "cancel_all must fire even when mid < reprice_threshold_bps"
         );
     }
 }

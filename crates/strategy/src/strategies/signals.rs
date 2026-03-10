@@ -268,6 +268,71 @@ impl VpinTracker {
     }
 }
 
+/// Tick-level EMA drift detector for fast trend detection.
+///
+/// Tracks an EMA of tick-to-tick mid-price returns (in bps). Positive values indicate
+/// an upward drift, negative values indicate a downward drift.
+/// Output is signed instantaneous drift in bps (NOT annualised bps/hr).
+///
+/// When `span == 0`, the detector is disabled: `update()` is a no-op and
+/// `drift_bps()` always returns 0.0.
+#[derive(Debug, Clone)]
+pub struct FastDriftSignal {
+    ema: Ema,
+    last_mid: Option<f64>,
+    enabled: bool,
+}
+
+impl FastDriftSignal {
+    /// Create a fast drift signal with the given EMA span (number of ticks).
+    /// Use `span = 0` to disable.
+    pub fn new(span: usize) -> Self {
+        if span == 0 {
+            // Use span=1 as a placeholder but mark disabled so update() is a no-op.
+            Self {
+                ema: Ema::new(1),
+                last_mid: None,
+                enabled: false,
+            }
+        } else {
+            Self {
+                ema: Ema::new(span),
+                last_mid: None,
+                enabled: true,
+            }
+        }
+    }
+
+    /// Feed a new mid price. Returns the updated signed drift in bps.
+    pub fn update(&mut self, mid: f64) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        if let Some(last) = self.last_mid {
+            if last > 0.0 {
+                let return_bps = (mid - last) / last * 10_000.0;
+                self.ema.update(return_bps);
+            }
+        }
+        self.last_mid = Some(mid);
+        self.drift_bps()
+    }
+
+    /// Current signed EMA drift in bps. Positive = uptrend, negative = downtrend.
+    /// Returns 0.0 when disabled or not yet initialised.
+    pub fn drift_bps(&self) -> f64 {
+        if !self.enabled || !self.ema.is_initialized() {
+            return 0.0;
+        }
+        self.ema.value
+    }
+
+    /// Whether the absolute drift exceeds the given threshold.
+    pub fn is_fast_trending(&self, threshold_bps: f64) -> bool {
+        self.drift_bps().abs() > threshold_bps
+    }
+}
+
 /// Classifies market regime as flat or trending based on mid-price drift rate (bps/hr).
 ///
 /// Uses a time-based rolling window and Schmitt trigger hysteresis to avoid flip-flopping.
@@ -590,7 +655,11 @@ mod tests {
         for i in 0..10u64 {
             rd.update(1000.0, i * 360 * ns_per_sec);
         }
-        assert!(rd.drift_bps_hr().abs() < 1e-6, "drift={}", rd.drift_bps_hr());
+        assert!(
+            rd.drift_bps_hr().abs() < 1e-6,
+            "drift={}",
+            rd.drift_bps_hr()
+        );
         assert!(!rd.is_trending());
         assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
     }
@@ -655,7 +724,10 @@ mod tests {
         // At t=180s: t=60s evicted, window = [(1000.325, 120s), (?, 180s)].
         // drift_bps = 18*60/3600 = 0.3; newest = 1000.325 * (1 + 0.3/10000) ≈ 1000.355
         rd.update(1000.355, 180 * ns);
-        assert!(!rd.is_trending(), "should exit trending when drift < exit threshold");
+        assert!(
+            !rd.is_trending(),
+            "should exit trending when drift < exit threshold"
+        );
         assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
     }
 
@@ -676,7 +748,10 @@ mod tests {
             "trend data evicted; drift should be 0, got {}",
             rd.drift_bps_hr()
         );
-        assert!(!rd.is_trending(), "should exit trending after window clears");
+        assert!(
+            !rd.is_trending(),
+            "should exit trending after window clears"
+        );
     }
 
     #[test]
@@ -688,8 +763,16 @@ mod tests {
         rd.update(1000.2, 60 * ns); // 120 bps/hr > 100 → enters trending
         assert!(rd.is_trending());
         let mult = rd.spread_multiplier();
-        assert!(mult.is_finite(), "must not produce NaN or infinity: {}", mult);
-        assert!((mult - 3.0).abs() < 1e-10, "binary mode should return max_mult={}", mult);
+        assert!(
+            mult.is_finite(),
+            "must not produce NaN or infinity: {}",
+            mult
+        );
+        assert!(
+            (mult - 3.0).abs() < 1e-10,
+            "binary mode should return max_mult={}",
+            mult
+        );
     }
 
     #[test]
@@ -698,5 +781,83 @@ mod tests {
         rd.update(1000.0, 0);
         assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
         assert!(rd.drift_bps_hr().abs() < 1e-10);
+    }
+
+    // --- FastDriftSignal tests ---
+
+    #[test]
+    fn test_fast_drift_disabled_span_zero() {
+        let mut fd = FastDriftSignal::new(0);
+        fd.update(1000.0);
+        fd.update(2000.0); // huge jump — should be ignored
+        assert!((fd.drift_bps() - 0.0).abs() < 1e-10);
+        assert!(!fd.is_fast_trending(1.0));
+    }
+
+    #[test]
+    fn test_fast_drift_basic() {
+        let mut fd = FastDriftSignal::new(1);
+        fd.update(1000.0); // first update — no return yet
+        assert!((fd.drift_bps() - 0.0).abs() < 1e-10);
+        // 1% move = 100 bps
+        fd.update(1010.0);
+        assert!(fd.drift_bps() > 90.0, "drift_bps={}", fd.drift_bps());
+    }
+
+    #[test]
+    fn test_fast_drift_trending_detection() {
+        let mut fd = FastDriftSignal::new(5);
+        // Feed sustained upward moves
+        let mut price = 1000.0;
+        for _ in 0..20 {
+            price *= 1.001; // 10 bps up each tick
+            fd.update(price);
+        }
+        assert!(fd.is_fast_trending(5.0), "drift_bps={}", fd.drift_bps());
+        assert!(fd.drift_bps() > 0.0); // positive drift (upward)
+    }
+
+    #[test]
+    fn test_fast_drift_downtrend() {
+        let mut fd = FastDriftSignal::new(5);
+        let mut price = 1000.0;
+        for _ in 0..20 {
+            price *= 0.999; // 10 bps down each tick
+            fd.update(price);
+        }
+        // drift_bps tracks signed drift; is_fast_trending uses abs
+        assert!(fd.is_fast_trending(5.0), "drift_bps={}", fd.drift_bps());
+        assert!(fd.drift_bps() < 0.0); // negative drift (downward)
+    }
+
+    #[test]
+    fn test_fast_drift_flat_not_trending() {
+        let mut fd = FastDriftSignal::new(10);
+        for _ in 0..30 {
+            fd.update(1000.0);
+        }
+        assert!(
+            !fd.is_fast_trending(1.0),
+            "flat price should not be trending: drift_bps={}",
+            fd.drift_bps()
+        );
+    }
+
+    #[test]
+    fn test_fast_drift_converges_to_zero_after_flat() {
+        let mut fd = FastDriftSignal::new(5);
+        // Initial spike
+        fd.update(1000.0);
+        fd.update(1010.0);
+        assert!(fd.drift_bps() > 0.0);
+        // Flat price — EMA converges back toward 0
+        for _ in 0..100 {
+            fd.update(1010.0);
+        }
+        assert!(
+            fd.drift_bps().abs() < 1.0,
+            "drift should decay to near 0 after flat: {}",
+            fd.drift_bps()
+        );
     }
 }

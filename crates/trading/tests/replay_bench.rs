@@ -2171,9 +2171,10 @@ fn bench_regime_sweep() {
         "══════════════════════════════════════════════════════════════════════════════════════════"
     );
 
-    for &(exchange, exchange_str, symbol_str) in
-        &[(Exchange::Binance, "binance", "ETHUSDT"), (Exchange::Bybit, "bybit", "ETHUSDT")]
-    {
+    for &(exchange, exchange_str, symbol_str) in &[
+        (Exchange::Binance, "binance", "ETHUSDT"),
+        (Exchange::Bybit, "bybit", "ETHUSDT"),
+    ] {
         let data_dir_candidates = ["testdata", "../../testdata"];
         let mut events_opt: Option<Vec<(u64, replay_harness::ReplayEvent)>> = None;
         for dir in &data_dir_candidates {
@@ -2317,7 +2318,9 @@ fn bench_regime_sweep() {
             if b.baseline {
                 return std::cmp::Ordering::Less;
             }
-            b.calmar.partial_cmp(&a.calmar).unwrap_or(std::cmp::Ordering::Equal)
+            b.calmar
+                .partial_cmp(&a.calmar)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         println!(
@@ -2334,7 +2337,11 @@ fn bench_regime_sweep() {
         println!("  {:-<114}", "");
 
         for (rank, r) in results.iter().enumerate() {
-            let label = if r.baseline { "baseline".to_string() } else { (rank + 1).to_string() };
+            let label = if r.baseline {
+                "baseline".to_string()
+            } else {
+                (rank + 1).to_string()
+            };
             let window_str = if r.baseline {
                 "off".to_string()
             } else {
@@ -2363,6 +2370,212 @@ fn bench_regime_sweep() {
 
         println!("  {:-<114}", "");
         println!("  baseline = conserv config with regime disabled (regime_window_secs=0)");
+    }
+
+    println!();
+}
+
+/// Stop-quoting benchmark — compares baseline vs spread-widening vs stop-quoting configs
+/// on ETHUSDT historical data to validate P&L improvement during trending markets.
+///
+/// Configs compared:
+///   1. baseline       — regime disabled
+///   2. spread-widen   — regime with max_mult=3.0, no stop-quoting
+///   3. stop-quote     — regime + stop-quoting, no fast drift, no flush
+///   4. sq+flush       — regime + stop-quoting + emergency flush
+///   5. sq+fast        — regime + stop-quoting + fast drift signal
+///
+/// Requires ETHUSDT data symlinked into testdata/. Skips gracefully if absent.
+#[test]
+fn stop_quote_bench() {
+    struct SqResult {
+        label: &'static str,
+        fills: usize,
+        realized: f64,
+        m2m_pnl: f64,
+        fees: f64,
+        max_dd: f64,
+        calmar: f64,
+    }
+
+    fn compute_calmar(pnl: f64, dd: f64) -> f64 {
+        if dd > 1e-6 {
+            pnl / dd
+        } else if pnl > 0.0 {
+            f64::MAX
+        } else {
+            0.0
+        }
+    }
+
+    println!();
+    println!(
+        "══════════════════════════════════════════════════════════════════════════════════════════"
+    );
+    println!("  ETHUSDT STOP-QUOTING MODE COMPARISON — 5 configs");
+    println!("  baseline | spread-widen | stop-quote | sq+flush | sq+fast");
+    println!("  Fixed: conserv base (γ=1.0,κ=1.5,τ=2.0,vpin=2.0), reprice=12, max_pos=0.05");
+    println!("  Regime: window=300s, drift_enter=100 bps/hr, drift_exit=50 bps/hr");
+    println!(
+        "══════════════════════════════════════════════════════════════════════════════════════════"
+    );
+
+    for &(exchange, exchange_str, symbol_str) in &[
+        (Exchange::Binance, "binance", "ETHUSDT"),
+        (Exchange::Bybit, "bybit", "ETHUSDT"),
+    ] {
+        let data_dir_candidates = ["testdata", "../../testdata"];
+        let mut events_opt: Option<Vec<(u64, replay_harness::ReplayEvent)>> = None;
+        for dir in &data_dir_candidates {
+            let files = find_series_files(dir, exchange_str, "ethusdt");
+            if !files.is_empty() {
+                match load_events_multi(&files) {
+                    Ok(ev) => {
+                        events_opt = Some(ev);
+                        break;
+                    }
+                    Err(e) => eprintln!("WARN: failed to load {} ETHUSDT: {}", exchange_str, e),
+                }
+            }
+        }
+        let events = match events_opt {
+            Some(e) => e,
+            None => {
+                println!(
+                    "\n  SKIP: no {} ETHUSDT series data in testdata/\n",
+                    exchange_str.to_uppercase()
+                );
+                continue;
+            }
+        };
+
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        println!(
+            "\n  {} ETHUSDT — {} events ({} book updates)",
+            exchange_str.to_uppercase(),
+            events.len(),
+            book_count
+        );
+
+        let start_all = std::time::Instant::now();
+        let mut results: Vec<SqResult> = Vec::new();
+
+        // Shared base params (conserv preset)
+        let base = serde_json::json!({
+            "risk_aversion": 1.0,
+            "fill_intensity": 1.5,
+            "time_horizon": 2.0,
+            "vpin_factor": 2.0,
+            "vpin_bucket_size": 50000.0,
+            "vpin_n_buckets": 20,
+            "size_decay_power": 2.0,
+            "reduce_boost": 0.5,
+            "order_size": 0.01,
+            "reprice_threshold_bps": 12.0,
+            "max_position": 0.05,
+        });
+
+        // Regime base params (shared by configs 2-5)
+        let regime_base = serde_json::json!({
+            "regime_window_secs": 300_i64,
+            "regime_drift_enter_bps_hr": 100.0,
+            "regime_drift_exit_bps_hr": 50.0,
+            "regime_max_mult": 3.0,
+        });
+
+        let configs: &[(&'static str, serde_json::Value)] = &[
+            // 1. Baseline: no regime
+            ("baseline", serde_json::json!({})),
+            // 2. Spread-widen: regime enabled, no stop-quoting
+            ("spread-widen", regime_base.clone()),
+            // 3. Stop-quote: regime + stop-quoting, no flush, no fast drift
+            (
+                "stop-quote",
+                serde_json::json!({
+                    "regime_window_secs": 300_i64,
+                    "regime_drift_enter_bps_hr": 100.0,
+                    "regime_drift_exit_bps_hr": 50.0,
+                    "regime_max_mult": 3.0,
+                    "regime_stop_quote": true,
+                }),
+            ),
+            // 4. sq+flush: regime + stop-quoting + emergency flush
+            (
+                "sq+flush",
+                serde_json::json!({
+                    "regime_window_secs": 300_i64,
+                    "regime_drift_enter_bps_hr": 100.0,
+                    "regime_drift_exit_bps_hr": 50.0,
+                    "regime_max_mult": 3.0,
+                    "regime_stop_quote": true,
+                    "regime_flush_enabled": true,
+                }),
+            ),
+            // 5. sq+fast: regime + stop-quoting + fast drift signal (span=10, threshold=50 bps)
+            (
+                "sq+fast",
+                serde_json::json!({
+                    "regime_window_secs": 300_i64,
+                    "regime_drift_enter_bps_hr": 100.0,
+                    "regime_drift_exit_bps_hr": 50.0,
+                    "regime_max_mult": 3.0,
+                    "regime_stop_quote": true,
+                    "fast_drift_span": 10_i64,
+                    "fast_drift_threshold_bps": 50.0,
+                }),
+            ),
+        ];
+
+        for (label, extra_params) in configs {
+            let mut p = base.clone();
+            if let serde_json::Value::Object(extra) = extra_params {
+                if let serde_json::Value::Object(ref mut base_map) = p {
+                    for (k, v) in extra {
+                        base_map.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            let params = StrategyParams { params: p };
+            let result = run_strategy_on_events(
+                "adaptive_mm",
+                &params,
+                exchange,
+                symbol_str,
+                &events,
+                SimConfig::default(),
+            );
+            let m2m = result.pnl_series.last().copied().unwrap_or(0.0);
+            let dd = max_drawdown(&result.pnl_series);
+            let calmar = compute_calmar(result.total_pnl, dd);
+            results.push(SqResult {
+                label,
+                fills: result.fill_count,
+                realized: result.total_pnl,
+                m2m_pnl: m2m,
+                fees: result.fee_total,
+                max_dd: dd,
+                calmar,
+            });
+        }
+
+        let elapsed = start_all.elapsed();
+        println!("  Elapsed: {:?}", elapsed);
+        println!();
+        println!(
+            "  {:>14} | {:>6} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8}",
+            "config", "fills", "realized", "m2m_pnl", "fees", "max_dd", "calmar"
+        );
+        println!("  {:-<82}", "");
+        for r in &results {
+            println!(
+                "  {:>14} | {:>6} | {:>10.2} | {:>10.2} | {:>8.2} | {:>8.2} | {:>8.3}",
+                r.label, r.fills, r.realized, r.m2m_pnl, r.fees, r.max_dd, r.calmar
+            );
+        }
+        println!("  {:-<82}", "");
     }
 
     println!();
