@@ -61,9 +61,7 @@ class QuestDBExporter:
 
         return pl.read_csv(BytesIO(csv_bytes))
 
-    def _output_path(
-        self, symbol: str, exchange: str, day: date, data_type: str
-    ) -> Path:
+    def _output_path(self, symbol: str, exchange: str, day: date, data_type: str) -> Path:
         """Build the output file path.
 
         Format: {output_dir}/{symbol}/{exchange}/{date}.{data_type}.parquet
@@ -79,9 +77,7 @@ class QuestDBExporter:
         """
         return self.output_dir / symbol / exchange / f"{day.isoformat()}.{data_type}.parquet"
 
-    def export_book_updates(
-        self, symbol: str, exchange: str, start: date, end: date
-    ) -> list[Path]:
+    def export_book_updates(self, symbol: str, exchange: str, start: date, end: date) -> list[Path]:
         """Export book updates for a date range to Parquet, one file per day.
 
         Output: {output_dir}/{symbol}/{exchange}/{date}.book.parquet
@@ -121,9 +117,7 @@ class QuestDBExporter:
             current = next_day
         return paths
 
-    def export_trades(
-        self, symbol: str, exchange: str, start: date, end: date
-    ) -> list[Path]:
+    def export_trades(self, symbol: str, exchange: str, start: date, end: date) -> list[Path]:
         """Export trades for a date range to Parquet, one file per day.
 
         Output: {output_dir}/{symbol}/{exchange}/{date}.trades.parquet
@@ -163,9 +157,7 @@ class QuestDBExporter:
             current = next_day
         return paths
 
-    def export_range(
-        self, symbol: str, exchange: str, start: date, end: date
-    ) -> list[Path]:
+    def export_range(self, symbol: str, exchange: str, start: date, end: date) -> list[Path]:
         """Export all data types for a date range, one file per day.
 
         Args:

@@ -142,15 +142,19 @@ class BinanceDownloader:
         )
         # Cast string numeric fields to Float64
         float_cols = [
-            "open", "high", "low", "close", "volume",
-            "quote_volume", "taker_buy_volume", "taker_buy_quote_volume",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_volume",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
         ]
         df = df.with_columns([pl.col(c).cast(pl.Float64) for c in float_cols])
         return df
 
-    def download_agg_trades(
-        self, symbol: str, start_ms: int, end_ms: int
-    ) -> pl.DataFrame:
+    def download_agg_trades(self, symbol: str, start_ms: int, end_ms: int) -> pl.DataFrame:
         """Download aggregate trade data with automatic pagination.
 
         GET /api/v3/aggTrades?symbol={}&startTime={}&endTime={}&limit=1000
@@ -261,9 +265,7 @@ class BinanceDownloader:
 
         return None
 
-    def download_to_parquet(
-        self, symbol: str, data_type: str, start_ms: int, end_ms: int
-    ) -> Path:
+    def download_to_parquet(self, symbol: str, data_type: str, start_ms: int, end_ms: int) -> Path:
         """Download data and save to Parquet file. Supports resuming.
 
         Args:
@@ -397,22 +399,22 @@ class BybitDownloader:
             },
             orient="row",
         )
-        df = df.with_columns([
-            pl.col("open_time").cast(pl.Int64),
-            pl.col("open").cast(pl.Float64),
-            pl.col("high").cast(pl.Float64),
-            pl.col("low").cast(pl.Float64),
-            pl.col("close").cast(pl.Float64),
-            pl.col("volume").cast(pl.Float64),
-            pl.col("turnover").cast(pl.Float64),
-        ])
+        df = df.with_columns(
+            [
+                pl.col("open_time").cast(pl.Int64),
+                pl.col("open").cast(pl.Float64),
+                pl.col("high").cast(pl.Float64),
+                pl.col("low").cast(pl.Float64),
+                pl.col("close").cast(pl.Float64),
+                pl.col("volume").cast(pl.Float64),
+                pl.col("turnover").cast(pl.Float64),
+            ]
+        )
         # Sort ascending by time (Bybit returns newest-first)
         df = df.sort("open_time")
         return df
 
-    def download_trades(
-        self, symbol: str, start_ms: int, end_ms: int
-    ) -> pl.DataFrame:
+    def download_trades(self, symbol: str, start_ms: int, end_ms: int) -> pl.DataFrame:
         """Download recent trade data.
 
         GET /v5/market/recent-trade?category=linear&symbol={}&limit=1000
@@ -481,9 +483,7 @@ class BybitDownloader:
         )
         return df.sort("timestamp")
 
-    def download_to_parquet(
-        self, symbol: str, data_type: str, start_ms: int, end_ms: int
-    ) -> Path:
+    def download_to_parquet(self, symbol: str, data_type: str, start_ms: int, end_ms: int) -> Path:
         """Download and save to Parquet.
 
         Args:

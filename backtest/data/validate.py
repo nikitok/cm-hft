@@ -97,9 +97,7 @@ class DataValidator:
             },
         )
 
-    def duplicate_detection(
-        self, df: pl.DataFrame, key_columns: list[str]
-    ) -> ValidationResult:
+    def duplicate_detection(self, df: pl.DataFrame, key_columns: list[str]) -> ValidationResult:
         """Detect duplicate rows based on key columns.
 
         Args:
