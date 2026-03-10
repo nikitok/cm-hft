@@ -9,7 +9,9 @@ use cm_market_data::orderbook::OrderBook;
 use crate::context::TradingContext;
 use crate::traits::{Fill, Strategy, StrategyParams};
 
-use super::signals::{Ema, TradeFlowSignal, TradeImbalanceTracker, VolatilityTracker, VpinTracker};
+use super::signals::{
+    Ema, RegimeDetector, TradeFlowSignal, TradeImbalanceTracker, VolatilityTracker, VpinTracker,
+};
 
 /// ML integration mode.
 ///
@@ -83,6 +85,10 @@ pub struct AdaptiveMarketMaker {
     imbalance_threshold: f64, // |imbalance| above which spread adjustment fires
     imbalance_factor: f64,    // spread multiplier on the vulnerable side; 0 = disabled
 
+    // ── Regime detector ──
+    regime_detector: RegimeDetector,
+    regime_max_combined_mult: f64, // cap on vpin_multiplier * regime_mult
+
     // ── Recent mid history for return calculation ──
     recent_mids: VecDeque<f64>,
 
@@ -139,6 +145,13 @@ impl AdaptiveMarketMaker {
     const DEFAULT_IMBALANCE_THRESHOLD: f64 = 0.5;
     const DEFAULT_IMBALANCE_FACTOR: f64 = 0.0; // 0 = disabled
 
+    // Regime detector defaults
+    const DEFAULT_REGIME_WINDOW_SECS: u64 = 0; // 0 = disabled
+    const DEFAULT_REGIME_DRIFT_ENTER_BPS_HR: f64 = 100.0;
+    const DEFAULT_REGIME_DRIFT_EXIT_BPS_HR: f64 = 50.0;
+    const DEFAULT_REGIME_MAX_MULT: f64 = 3.0;
+    const DEFAULT_REGIME_MAX_COMBINED_MULT: f64 = 5.0;
+
     // ML defaults
     const DEFAULT_ML_FACTOR: f64 = 1.0;
     const DEFAULT_ML_THRESHOLD: f64 = 0.05; // dead zone: ignore |signal| < threshold
@@ -166,6 +179,19 @@ impl AdaptiveMarketMaker {
             .get_i64("imbalance_window")
             .map(|v| v.max(0) as usize)
             .unwrap_or(Self::DEFAULT_IMBALANCE_WINDOW);
+        let regime_window_secs = params
+            .get_i64("regime_window_secs")
+            .map(|v| v.max(0) as u64)
+            .unwrap_or(Self::DEFAULT_REGIME_WINDOW_SECS);
+        let regime_drift_enter = params
+            .get_f64("regime_drift_enter_bps_hr")
+            .unwrap_or(Self::DEFAULT_REGIME_DRIFT_ENTER_BPS_HR);
+        let regime_drift_exit = params
+            .get_f64("regime_drift_exit_bps_hr")
+            .unwrap_or(Self::DEFAULT_REGIME_DRIFT_EXIT_BPS_HR);
+        let regime_max_mult = params
+            .get_f64("regime_max_mult")
+            .unwrap_or(Self::DEFAULT_REGIME_MAX_MULT);
 
         Self {
             base_spread_bps: params
@@ -262,6 +288,15 @@ impl AdaptiveMarketMaker {
             imbalance_factor: params
                 .get_f64("imbalance_factor")
                 .unwrap_or(Self::DEFAULT_IMBALANCE_FACTOR),
+            regime_detector: RegimeDetector::new(
+                regime_window_secs,
+                regime_drift_enter,
+                regime_drift_exit,
+                regime_max_mult,
+            ),
+            regime_max_combined_mult: params
+                .get_f64("regime_max_combined_mult")
+                .unwrap_or(Self::DEFAULT_REGIME_MAX_COMBINED_MULT),
             last_mid: 0.0,
             last_exchange: None,
             last_symbol: None,
@@ -332,6 +367,7 @@ impl Strategy for AdaptiveMarketMaker {
 
         // 1. Update signals.
         self.vol_tracker.update(mid);
+        self.regime_detector.update(mid, ctx.timestamp.as_nanos());
         let fair_value = self.fair_value_ema.update(mid);
 
         // 2. Check reprice threshold (bypass if fill triggered needs_requote).
@@ -476,7 +512,9 @@ impl Strategy for AdaptiveMarketMaker {
 
         if vol_bps < 0.01 {
             // Fallback: vol not yet estimated, use heuristic spread.
-            half_spread = (mid * self.base_spread_bps / 10_000.0 / 2.0).max(min_spread_floor);
+            // VPIN is not applied on this path (no vol estimate yet) — only regime multiplier.
+            half_spread = (mid * self.base_spread_bps / 10_000.0 / 2.0).max(min_spread_floor)
+                * self.regime_detector.spread_multiplier();
             reservation_price = adjusted_mid;
         } else {
             let gamma = self.risk_aversion;
@@ -500,8 +538,13 @@ impl Strategy for AdaptiveMarketMaker {
             // VPIN multiplier: widen spread during toxic flow.
             let vpin_multiplier = 1.0 + self.vpin_factor * self.vpin_tracker.vpin();
 
-            // Floor at min_spread, then apply VPIN multiplier.
-            half_spread = (as_spread / 2.0).max(min_spread_floor) * vpin_multiplier;
+            // Regime multiplier: widen spread during trending markets.
+            let regime_mult = self.regime_detector.spread_multiplier();
+
+            // Floor at min_spread, then apply combined multiplier (capped to avoid excessive width).
+            let combined_mult =
+                (vpin_multiplier * regime_mult).min(self.regime_max_combined_mult);
+            half_spread = (as_spread / 2.0).max(min_spread_floor) * combined_mult;
 
             // A-S reservation price with NORMALIZED inventory.
             // q_norm ∈ [-1, 1]: position as fraction of max_position.
@@ -749,6 +792,31 @@ impl Strategy for AdaptiveMarketMaker {
         }
         if let Some(v) = params.get_f64("imbalance_factor") {
             self.imbalance_factor = v;
+        }
+        // Regime detector: reconstruct on any param change (changing window_secs requires
+        // clearing the stale VecDeque — same pattern as imbalance_tracker above).
+        let regime_changed = params.get_i64("regime_window_secs").is_some()
+            || params.get_f64("regime_drift_enter_bps_hr").is_some()
+            || params.get_f64("regime_drift_exit_bps_hr").is_some()
+            || params.get_f64("regime_max_mult").is_some();
+        if regime_changed {
+            let window_secs = params
+                .get_i64("regime_window_secs")
+                .map(|v| v.max(0) as u64)
+                .unwrap_or(Self::DEFAULT_REGIME_WINDOW_SECS);
+            let drift_enter = params
+                .get_f64("regime_drift_enter_bps_hr")
+                .unwrap_or(Self::DEFAULT_REGIME_DRIFT_ENTER_BPS_HR);
+            let drift_exit = params
+                .get_f64("regime_drift_exit_bps_hr")
+                .unwrap_or(Self::DEFAULT_REGIME_DRIFT_EXIT_BPS_HR);
+            let max_mult = params
+                .get_f64("regime_max_mult")
+                .unwrap_or(Self::DEFAULT_REGIME_MAX_MULT);
+            self.regime_detector = RegimeDetector::new(window_secs, drift_enter, drift_exit, max_mult);
+        }
+        if let Some(v) = params.get_f64("regime_max_combined_mult") {
+            self.regime_max_combined_mult = v;
         }
         self.last_quoted_mid = None;
     }
@@ -1543,6 +1611,299 @@ mod tests {
             "imbalance_factor=0 should produce symmetric spread: ask_dist={:.4}, bid_dist={:.4}",
             ask_dist,
             bid_dist
+        );
+    }
+
+    // ── Regime detector integration tests ────────────────────────────────────
+
+    fn extract_ask(actions: &[crate::context::OrderAction]) -> Option<f64> {
+        actions.iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Sell => {
+                Some(price.to_f64())
+            }
+            _ => None,
+        })
+    }
+
+    fn extract_bid(actions: &[crate::context::OrderAction]) -> Option<f64> {
+        actions.iter().find_map(|a| match a {
+            crate::context::OrderAction::Submit { side, price, .. } if *side == Side::Buy => {
+                Some(price.to_f64())
+            }
+            _ => None,
+        })
+    }
+
+    /// regime_window_secs=0 (default): behavior identical to pre-regime code.
+    #[test]
+    fn test_regime_default_disabled_backward_compat() {
+        let mut strat_default = AdaptiveMarketMaker::from_params(&default_params());
+        let mut strat_explicit = AdaptiveMarketMaker::from_params(&StrategyParams {
+            params: serde_json::json!({ "regime_window_secs": 0 }),
+        });
+
+        let book = make_book(50000.0, 50001.0);
+        // Warm up both identically
+        for price in [50000.0, 50001.0, 50000.5, 50001.5, 50000.8] {
+            let b = make_book(price, price + 1.0);
+            let mut c1 = make_context();
+            strat_default.on_book_update(&mut c1, &b);
+            strat_default.last_quoted_mid = None;
+            let mut c2 = make_context();
+            strat_explicit.on_book_update(&mut c2, &b);
+            strat_explicit.last_quoted_mid = None;
+        }
+
+        let mut ctx1 = make_context();
+        strat_default.on_book_update(&mut ctx1, &book);
+        let mut ctx2 = make_context();
+        strat_explicit.on_book_update(&mut ctx2, &book);
+
+        let ask1 = extract_ask(&ctx1.drain_actions()).expect("no ask from default strat");
+        let ask2 = extract_ask(&ctx2.drain_actions()).expect("no ask from explicit strat");
+        assert!(
+            (ask1 - ask2).abs() < 1e-8,
+            "regime disabled should be identical to default: {ask1} vs {ask2}"
+        );
+    }
+
+    /// With regime enabled and trending prices, spread should widen vs disabled.
+    /// Tests the same trending price series fed to both strategies simultaneously,
+    /// comparing quoted spreads at the final price level.
+    #[test]
+    fn test_regime_widens_spread_during_trend() {
+        let common = serde_json::json!({
+            "regime_drift_enter_bps_hr": 100.0,
+            "regime_drift_exit_bps_hr": 50.0,
+            "regime_max_mult": 3.0,
+            "reprice_threshold_bps": 0.0,
+            "trade_flow_factor": 0.0,
+            "book_imbalance_factor": 0.0,
+        });
+        let mut params_no = common.clone();
+        params_no["regime_window_secs"] = serde_json::json!(0_i64);
+        let mut params_regime = common;
+        params_regime["regime_window_secs"] = serde_json::json!(60_i64);
+
+        let mut strat_no = AdaptiveMarketMaker::from_params(&StrategyParams { params: params_no });
+        let mut strat_regime =
+            AdaptiveMarketMaker::from_params(&StrategyParams { params: params_regime });
+        let ns_per_sec = 1_000_000_000u64;
+
+        // Feed the SAME trending ticks to both: 50000 → 50010 over 60s = 120 bps/hr
+        for i in 0..=10u64 {
+            let t_ns = i * 6 * ns_per_sec;
+            let price = 50000.0 + i as f64;
+            let b = make_book(price - 0.5, price + 0.5);
+            strat_no.last_quoted_mid = None;
+            strat_regime.last_quoted_mid = None;
+            let mut c1 = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat_no.on_book_update(&mut c1, &b);
+            let mut c2 = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat_regime.on_book_update(&mut c2, &b);
+        }
+
+        assert!(
+            strat_regime.regime_detector.is_trending(),
+            "drift={:.1} bps/hr should trigger trending",
+            strat_regime.regime_detector.drift_bps_hr()
+        );
+
+        // Compare spreads (bid-ask distance) at the same final price
+        let trend_price = 50010.0;
+        strat_no.last_quoted_mid = None;
+        strat_regime.last_quoted_mid = None;
+        let final_book = make_book(trend_price - 0.5, trend_price + 0.5);
+        let ts = Timestamp(61 * ns_per_sec);
+
+        let mut ctx_no = TradingContext::new(vec![], vec![], ts);
+        strat_no.on_book_update(&mut ctx_no, &final_book);
+        let mut ctx_regime = TradingContext::new(vec![], vec![], ts);
+        strat_regime.on_book_update(&mut ctx_regime, &final_book);
+
+        let actions_no = ctx_no.drain_actions();
+        let actions_regime = ctx_regime.drain_actions();
+        let ask_no = extract_ask(&actions_no).expect("no ask from no-regime");
+        let bid_no = extract_bid(&actions_no).expect("no bid from no-regime");
+        let ask_regime = extract_ask(&actions_regime).expect("no ask from regime");
+        let bid_regime = extract_bid(&actions_regime).expect("no bid from regime");
+
+        let spread_no = ask_no - bid_no;
+        let spread_regime = ask_regime - bid_regime;
+        assert!(
+            spread_regime > spread_no * 1.1,
+            "trending spread {spread_regime:.4} should be wider than no-regime spread {spread_no:.4}"
+        );
+    }
+
+    /// With regime enabled and flat prices, spread matches the disabled version.
+    #[test]
+    fn test_regime_normal_spread_during_flat() {
+        let common = serde_json::json!({
+            "regime_drift_enter_bps_hr": 100.0,
+            "regime_drift_exit_bps_hr": 50.0,
+            "regime_max_mult": 3.0,
+            "reprice_threshold_bps": 0.0,
+            "trade_flow_factor": 0.0,
+            "book_imbalance_factor": 0.0,
+        });
+        let mut params_no = common.clone();
+        params_no["regime_window_secs"] = serde_json::json!(0_i64);
+        let mut params_regime = common;
+        params_regime["regime_window_secs"] = serde_json::json!(60_i64);
+
+        let mut strat_no = AdaptiveMarketMaker::from_params(&StrategyParams { params: params_no });
+        let mut strat_regime =
+            AdaptiveMarketMaker::from_params(&StrategyParams { params: params_regime });
+        let ns_per_sec = 1_000_000_000u64;
+
+        // Feed identical flat prices to both strategies for 60 seconds
+        for i in 0..=10u64 {
+            let t_ns = i * 6 * ns_per_sec;
+            let b = make_book(50000.0, 50001.0);
+            strat_no.last_quoted_mid = None;
+            strat_regime.last_quoted_mid = None;
+            let mut c1 = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat_no.on_book_update(&mut c1, &b);
+            let mut c2 = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat_regime.on_book_update(&mut c2, &b);
+        }
+
+        assert!(
+            !strat_regime.regime_detector.is_trending(),
+            "flat prices should not trigger trending"
+        );
+
+        // Both should produce identical spreads
+        strat_no.last_quoted_mid = None;
+        strat_regime.last_quoted_mid = None;
+        let ts = Timestamp(61 * ns_per_sec);
+        let b = make_book(50000.0, 50001.0);
+        let mut ctx1 = TradingContext::new(vec![], vec![], ts);
+        strat_no.on_book_update(&mut ctx1, &b);
+        let mut ctx2 = TradingContext::new(vec![], vec![], ts);
+        strat_regime.on_book_update(&mut ctx2, &b);
+
+        let ask_no = extract_ask(&ctx1.drain_actions()).unwrap();
+        let ask_regime = extract_ask(&ctx2.drain_actions()).unwrap();
+        assert!(
+            (ask_no - ask_regime).abs() < 1e-8,
+            "flat: regime should not change spread: no={ask_no:.4}, regime={ask_regime:.4}"
+        );
+    }
+
+    /// on_params_update with new regime params reconstructs RegimeDetector (no stale entries).
+    #[test]
+    fn test_regime_params_update_reconstructs_detector() {
+        let params = StrategyParams {
+            params: serde_json::json!({
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_max_mult": 3.0,
+            }),
+        };
+        let mut strat = AdaptiveMarketMaker::from_params(&params);
+        let ns_per_sec = 1_000_000_000u64;
+
+        // Feed trending ticks to enter trending regime
+        for i in 0..=10u64 {
+            let t_ns = i * 6 * ns_per_sec;
+            let price = 50000.0 + i as f64;
+            let mut c = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat.last_quoted_mid = None;
+            strat.on_book_update(&mut c, &make_book(price - 0.5, price + 0.5));
+        }
+        assert!(strat.regime_detector.is_trending(), "should be trending before params update");
+
+        // Update regime_window_secs — should reconstruct detector, clearing stale trending state
+        let new_params = StrategyParams {
+            params: serde_json::json!({ "regime_window_secs": 900 }),
+        };
+        strat.on_params_update(&new_params);
+
+        // After reconstruction, detector is fresh (no stale trending state)
+        assert!(
+            !strat.regime_detector.is_trending(),
+            "reconstructed detector should not carry over stale trending state"
+        );
+    }
+
+    /// Combined VPIN * regime multiplier is capped at max_combined_mult.
+    #[test]
+    fn test_regime_combined_multiplier_capped() {
+        // High VPIN factor + high regime max_mult — combined should be capped at 5.0
+        let params = StrategyParams {
+            params: serde_json::json!({
+                "vpin_factor": 10.0,         // vpin_multiplier can be up to 11x
+                "vpin_bucket_size": 100.0,
+                "vpin_n_buckets": 2,
+                "regime_window_secs": 60,
+                "regime_drift_enter_bps_hr": 100.0,
+                "regime_drift_exit_bps_hr": 50.0,
+                "regime_max_mult": 5.0,
+                "regime_max_combined_mult": 5.0,
+                "reprice_threshold_bps": 0.0,
+                "trade_flow_factor": 0.0,
+                "book_imbalance_factor": 0.0,
+            }),
+        };
+        let mut strat = AdaptiveMarketMaker::from_params(&params);
+        let ns_per_sec = 1_000_000_000u64;
+
+        // Warm up vol
+        for i in 0..5u64 {
+            let b = make_book(50000.0, 50001.0);
+            let mut c = TradingContext::new(vec![], vec![], Timestamp(i * 1_000_000));
+            strat.on_book_update(&mut c, &b);
+        }
+
+        // Build extreme VPIN (all buys = VPIN → 1.0)
+        for _ in 0..20 {
+            let trade = Trade {
+                exchange: Exchange::Binance,
+                symbol: Symbol::new("BTCUSDT"),
+                timestamp: Timestamp::from_millis(1000),
+                price: Price::from(50000.0),
+                quantity: Quantity::from(0.1),
+                side: Side::Buy,
+                trade_id: "1".to_string(),
+            };
+            strat.on_trade(&mut make_context(), &trade);
+        }
+
+        // Feed trending ticks to enter trending regime
+        for i in 0..=10u64 {
+            let t_ns = i * 6 * ns_per_sec;
+            let price = 50000.0 + i as f64;
+            strat.last_quoted_mid = None;
+            let mut c = TradingContext::new(vec![], vec![], Timestamp(t_ns));
+            strat.on_book_update(&mut c, &make_book(price - 0.5, price + 0.5));
+        }
+        assert!(strat.regime_detector.is_trending(), "should be trending");
+        assert!(strat.vpin_tracker.vpin() > 0.5, "VPIN should be high");
+
+        // Without cap: vpin_multiplier ≈ 1 + 10 * 1.0 = 11.0; regime_mult = 5.0; product = 55.0
+        // With cap at 5.0, the product should not exceed 5.0
+        strat.last_quoted_mid = None;
+        let trend_price = 50010.0;
+        let mut ctx = TradingContext::new(vec![], vec![], Timestamp(60 * ns_per_sec + 1_000_000));
+        strat.on_book_update(&mut ctx, &make_book(trend_price - 0.5, trend_price + 0.5));
+        let actions = ctx.drain_actions();
+        let ask = extract_ask(&actions).unwrap();
+        let bid = extract_bid(&actions).unwrap();
+        let half_spread = (ask - bid) / 2.0;
+        let min_half_spread = trend_price * 2.0 / 10_000.0 / 2.0; // min_spread_bps=2.0
+
+        // The effective multiplier should be at most max_combined_mult=5.0
+        // half_spread = base * combined_mult, so half_spread/base ≤ 5.0
+        let effective_mult = half_spread / min_half_spread;
+        eprintln!(
+            "half_spread={half_spread:.4}, min_half={min_half_spread:.4}, effective_mult={effective_mult:.2}"
+        );
+        assert!(
+            effective_mult <= 5.01, // small tolerance for float rounding
+            "combined multiplier should be capped at 5.0, got {effective_mult:.2}"
         );
     }
 }

@@ -2119,3 +2119,251 @@ fn bench_vpin_factor_sweep() {
 
     println!();
 }
+
+/// Regime parameter sweep on ETHUSDT data.
+///
+/// Sweeps `regime_window_secs` × `regime_drift_enter_bps_hr` × `regime_max_mult` (27 configs)
+/// plus a baseline row with regime disabled. Ranks by Calmar ratio.
+///
+/// Base config: conserv (γ=1.0, κ=1.5, τ=2.0, vpin=2.0, decay=2.0, boost=0.5,
+/// max_pos=0.05, reprice_bps=12). drift_exit = drift_enter / 2 (standard hysteresis).
+///
+/// Requires ETHUSDT data symlinked into testdata/. Skips gracefully if absent.
+#[test]
+fn bench_regime_sweep() {
+    let windows: &[u64] = &[60, 300, 900];
+    let drift_enters: &[f64] = &[50.0, 100.0, 200.0];
+    let max_mults: &[f64] = &[2.0, 3.0, 5.0];
+
+    struct RegimeResult {
+        window_secs: u64,
+        drift_enter: f64,
+        max_mult: f64,
+        baseline: bool,
+        fills: usize,
+        realized: f64,
+        m2m_pnl: f64,
+        fees: f64,
+        max_dd: f64,
+        calmar: f64,
+        pnl_per_fill: f64,
+    }
+
+    fn compute_calmar(pnl: f64, dd: f64) -> f64 {
+        if dd > 1e-6 {
+            pnl / dd
+        } else if pnl > 0.0 {
+            f64::MAX
+        } else {
+            0.0
+        }
+    }
+
+    println!();
+    println!(
+        "══════════════════════════════════════════════════════════════════════════════════════════"
+    );
+    println!("  ETHUSDT REGIME DETECTOR SWEEP — 27 configs + baseline");
+    println!("  window_secs × [60,300,900], drift_enter × [50,100,200] bps/hr, max_mult × [2,3,5]");
+    println!("  Fixed: conserv base (γ=1.0,κ=1.5,τ=2.0,vpin=2.0), reprice=12, max_pos=0.05");
+    println!("  drift_exit = drift_enter/2 (standard hysteresis ratio)");
+    println!(
+        "══════════════════════════════════════════════════════════════════════════════════════════"
+    );
+
+    for &(exchange, exchange_str, symbol_str) in
+        &[(Exchange::Binance, "binance", "ETHUSDT"), (Exchange::Bybit, "bybit", "ETHUSDT")]
+    {
+        let data_dir_candidates = ["testdata", "../../testdata"];
+        let mut events_opt: Option<Vec<(u64, replay_harness::ReplayEvent)>> = None;
+        for dir in &data_dir_candidates {
+            let files = find_series_files(dir, exchange_str, "ethusdt");
+            if !files.is_empty() {
+                match load_events_multi(&files) {
+                    Ok(ev) => {
+                        events_opt = Some(ev);
+                        break;
+                    }
+                    Err(e) => eprintln!("WARN: failed to load {} ETHUSDT: {}", exchange_str, e),
+                }
+            }
+        }
+        let events = match events_opt {
+            Some(e) => e,
+            None => {
+                println!(
+                    "\n  SKIP: no {} ETHUSDT series data in testdata/\n",
+                    exchange_str.to_uppercase()
+                );
+                continue;
+            }
+        };
+
+        let book_count = events
+            .iter()
+            .filter(|(_, e)| matches!(e, replay_harness::ReplayEvent::Book(_)))
+            .count();
+        println!(
+            "\n  {} ETHUSDT — {} events ({} book updates)",
+            exchange_str.to_uppercase(),
+            events.len(),
+            book_count
+        );
+
+        let start_all = std::time::Instant::now();
+        let mut results: Vec<RegimeResult> = Vec::new();
+
+        // Base params shared by all configs (conserv preset)
+        let base = serde_json::json!({
+            "risk_aversion": 1.0,
+            "fill_intensity": 1.5,
+            "time_horizon": 2.0,
+            "vpin_factor": 2.0,
+            "vpin_bucket_size": 50000.0,
+            "vpin_n_buckets": 20,
+            "size_decay_power": 2.0,
+            "reduce_boost": 0.5,
+            "order_size": 0.01,
+            "reprice_threshold_bps": 12.0,
+            "max_position": 0.05,
+        });
+
+        // Baseline: regime disabled
+        {
+            let mut p = base.clone();
+            p["regime_window_secs"] = serde_json::json!(0_i64);
+            let params = StrategyParams { params: p };
+            let result = run_strategy_on_events(
+                "adaptive_mm",
+                &params,
+                exchange,
+                symbol_str,
+                &events,
+                SimConfig::default(),
+            );
+            let m2m = result.pnl_series.last().copied().unwrap_or(0.0);
+            let dd = max_drawdown(&result.pnl_series);
+            let calmar = compute_calmar(result.total_pnl, dd);
+            let pnl_per_fill = if result.fill_count > 0 {
+                result.total_pnl / result.fill_count as f64
+            } else {
+                0.0
+            };
+            results.push(RegimeResult {
+                window_secs: 0,
+                drift_enter: 0.0,
+                max_mult: 1.0,
+                baseline: true,
+                fills: result.fill_count,
+                realized: result.total_pnl,
+                m2m_pnl: m2m,
+                fees: result.fee_total,
+                max_dd: dd,
+                calmar,
+                pnl_per_fill,
+            });
+        }
+
+        // 27 parameter combinations
+        for &window_secs in windows {
+            for &drift_enter in drift_enters {
+                let drift_exit = drift_enter / 2.0;
+                for &max_mult in max_mults {
+                    let mut p = base.clone();
+                    p["regime_window_secs"] = serde_json::json!(window_secs as i64);
+                    p["regime_drift_enter_bps_hr"] = serde_json::json!(drift_enter);
+                    p["regime_drift_exit_bps_hr"] = serde_json::json!(drift_exit);
+                    p["regime_max_mult"] = serde_json::json!(max_mult);
+                    let params = StrategyParams { params: p };
+
+                    let result = run_strategy_on_events(
+                        "adaptive_mm",
+                        &params,
+                        exchange,
+                        symbol_str,
+                        &events,
+                        SimConfig::default(),
+                    );
+                    let m2m = result.pnl_series.last().copied().unwrap_or(0.0);
+                    let dd = max_drawdown(&result.pnl_series);
+                    let calmar = compute_calmar(result.total_pnl, dd);
+                    let pnl_per_fill = if result.fill_count > 0 {
+                        result.total_pnl / result.fill_count as f64
+                    } else {
+                        0.0
+                    };
+                    results.push(RegimeResult {
+                        window_secs,
+                        drift_enter,
+                        max_mult,
+                        baseline: false,
+                        fills: result.fill_count,
+                        realized: result.total_pnl,
+                        m2m_pnl: m2m,
+                        fees: result.fee_total,
+                        max_dd: dd,
+                        calmar,
+                        pnl_per_fill,
+                    });
+                }
+            }
+        }
+
+        // Sort by Calmar descending (baseline pinned to end for easy comparison)
+        results.sort_by(|a, b| {
+            if a.baseline {
+                return std::cmp::Ordering::Greater;
+            }
+            if b.baseline {
+                return std::cmp::Ordering::Less;
+            }
+            b.calmar.partial_cmp(&a.calmar).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        println!(
+            "  Sweep: {} configs in {:.1?}",
+            results.len(),
+            start_all.elapsed()
+        );
+        println!();
+        println!(
+            "  {:>4} | {:>6} | {:>7} | {:>7} | {:>6} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8} | {:>7}",
+            "Rank", "Window", "Enter", "MaxMult", "Fills",
+            "Realized$", "M2M$", "Fees$", "Max DD$", "Calmar", "$/fill"
+        );
+        println!("  {:-<114}", "");
+
+        for (rank, r) in results.iter().enumerate() {
+            let label = if r.baseline { "baseline".to_string() } else { (rank + 1).to_string() };
+            let window_str = if r.baseline {
+                "off".to_string()
+            } else {
+                format!("{}s", r.window_secs)
+            };
+            let enter_str = if r.baseline {
+                "—".to_string()
+            } else {
+                format!("{:.0}", r.drift_enter)
+            };
+            println!(
+                "  {:>4} | {:>6} | {:>7} | {:>7.1} | {:>6} | {:>10.2} | {:>10.2} | {:>8.2} | {:>8.2} | {:>8.3} | {:>7.4}",
+                label,
+                window_str,
+                enter_str,
+                r.max_mult,
+                r.fills,
+                r.realized,
+                r.m2m_pnl,
+                r.fees,
+                r.max_dd,
+                r.calmar,
+                r.pnl_per_fill
+            );
+        }
+
+        println!("  {:-<114}", "");
+        println!("  baseline = conserv config with regime disabled (regime_window_secs=0)");
+    }
+
+    println!();
+}

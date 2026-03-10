@@ -268,6 +268,115 @@ impl VpinTracker {
     }
 }
 
+/// Classifies market regime as flat or trending based on mid-price drift rate (bps/hr).
+///
+/// Uses a time-based rolling window and Schmitt trigger hysteresis to avoid flip-flopping.
+/// Outputs a spread multiplier in `[1.0, max_mult]` — 1.0 in flat regime, up to `max_mult`
+/// in strong trending regime.
+///
+/// When `window_secs == 0`, the detector is disabled: `update()` is a no-op and
+/// `spread_multiplier()` always returns 1.0.
+#[derive(Debug, Clone)]
+pub struct RegimeDetector {
+    window: VecDeque<(f64, u64)>, // (mid_price, timestamp_ns)
+    window_ns: u64,
+    drift_enter_bps_hr: f64,
+    drift_exit_bps_hr: f64,
+    max_mult: f64,
+    trending: bool,
+}
+
+impl RegimeDetector {
+    /// Create a regime detector.
+    ///
+    /// - `window_secs`: rolling window size; use 0 to disable.
+    /// - `drift_enter_bps_hr`: abs drift threshold to enter trending regime (bps/hr).
+    /// - `drift_exit_bps_hr`: abs drift threshold to exit trending regime (bps/hr).
+    /// - `max_mult`: spread multiplier ceiling in trending regime.
+    pub fn new(
+        window_secs: u64,
+        drift_enter_bps_hr: f64,
+        drift_exit_bps_hr: f64,
+        max_mult: f64,
+    ) -> Self {
+        Self {
+            window: VecDeque::new(),
+            window_ns: window_secs.saturating_mul(1_000_000_000),
+            drift_enter_bps_hr,
+            drift_exit_bps_hr,
+            max_mult,
+            trending: false,
+        }
+    }
+
+    /// Feed a mid-price observation. Evicts stale entries and updates regime state.
+    pub fn update(&mut self, mid: f64, timestamp_ns: u64) {
+        if self.window_ns == 0 {
+            return;
+        }
+        // Evict entries outside the rolling window.
+        while let Some(&(_, front_ts)) = self.window.front() {
+            if timestamp_ns.saturating_sub(front_ts) > self.window_ns {
+                self.window.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.window.push_back((mid, timestamp_ns));
+
+        // Schmitt trigger hysteresis.
+        let abs_drift = self.drift_bps_hr().abs();
+        if self.trending {
+            if abs_drift < self.drift_exit_bps_hr {
+                self.trending = false;
+            }
+        } else if abs_drift > self.drift_enter_bps_hr {
+            self.trending = true;
+        }
+    }
+
+    /// Current drift rate in bps/hr. Positive = uptrend, negative = downtrend.
+    /// Returns 0.0 when fewer than 2 entries are in the window.
+    pub fn drift_bps_hr(&self) -> f64 {
+        if self.window.len() < 2 {
+            return 0.0;
+        }
+        let &(oldest_mid, oldest_ts) = self.window.front().unwrap();
+        let &(newest_mid, newest_ts) = self.window.back().unwrap();
+        let elapsed_ns = newest_ts.saturating_sub(oldest_ts);
+        if elapsed_ns == 0 || oldest_mid <= 0.0 {
+            return 0.0;
+        }
+        let drift_bps = (newest_mid - oldest_mid) / oldest_mid * 10_000.0;
+        drift_bps * 3_600_000_000_000.0 / elapsed_ns as f64
+    }
+
+    /// Whether the detector is currently in the trending regime.
+    pub fn is_trending(&self) -> bool {
+        self.trending
+    }
+
+    /// Spread multiplier in `[1.0, max_mult]`.
+    ///
+    /// Returns 1.0 when disabled or not trending.
+    /// When `drift_enter_bps_hr <= drift_exit_bps_hr`, uses binary mode (returns 1.0 or
+    /// `max_mult`) to avoid divide-by-zero.
+    pub fn spread_multiplier(&self) -> f64 {
+        if self.window_ns == 0 || !self.trending {
+            return 1.0;
+        }
+        // Guard: if thresholds equal or inverted, use binary mode to avoid divide-by-zero.
+        if self.drift_enter_bps_hr <= self.drift_exit_bps_hr {
+            return self.max_mult;
+        }
+        let abs_drift = self.drift_bps_hr().abs();
+        let ramp = (abs_drift - self.drift_exit_bps_hr)
+            / (self.drift_enter_bps_hr - self.drift_exit_bps_hr);
+        let mult = 1.0 + (self.max_mult - 1.0) * ramp;
+        mult.clamp(1.0, self.max_mult)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +569,134 @@ mod tests {
         // Both buckets should be 1.0 (pure buy)
         assert!((vpin.vpin() - 1.0).abs() < 1e-10);
         // Current bucket should have 50 remaining
+    }
+
+    // --- RegimeDetector tests ---
+
+    #[test]
+    fn test_regime_disabled() {
+        let mut rd = RegimeDetector::new(0, 100.0, 50.0, 3.0);
+        rd.update(1000.0, 0);
+        rd.update(2000.0, 1_000_000_000); // huge jump — should be ignored
+        assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
+        assert!(!rd.is_trending());
+        assert!(rd.drift_bps_hr().abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_regime_flat_price() {
+        let mut rd = RegimeDetector::new(3600, 100.0, 50.0, 3.0);
+        let ns_per_sec = 1_000_000_000u64;
+        for i in 0..10u64 {
+            rd.update(1000.0, i * 360 * ns_per_sec);
+        }
+        assert!(rd.drift_bps_hr().abs() < 1e-6, "drift={}", rd.drift_bps_hr());
+        assert!(!rd.is_trending());
+        assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_regime_uptrend() {
+        // 120 bps/hr uptrend over 60s window — well above drift_enter=100
+        let mut rd = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        let ns = 1_000_000_000u64;
+        rd.update(1000.0, 0);
+        // drift_bps = 0.2/1000 * 10000 = 2 bps; drift_bps_hr = 2 * 3600/60 = 120
+        rd.update(1000.2, 60 * ns);
+        assert!(rd.drift_bps_hr() > 100.0, "drift={}", rd.drift_bps_hr());
+        assert!(rd.is_trending());
+        assert!(rd.spread_multiplier() > 1.0);
+        assert!(rd.spread_multiplier() <= 3.0);
+    }
+
+    #[test]
+    fn test_regime_downtrend_same_as_uptrend() {
+        // Abs drift is used — downtrend gives same multiplier as equivalent uptrend.
+        let ns = 1_000_000_000u64;
+        let mut rd_up = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        rd_up.update(1000.0, 0);
+        rd_up.update(1000.2, 60 * ns); // 120 bps/hr up
+
+        let mut rd_down = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        rd_down.update(1000.2, 0);
+        rd_down.update(1000.0, 60 * ns); // ~120 bps/hr down
+
+        assert!(rd_up.is_trending());
+        assert!(rd_down.is_trending());
+        // Both clamped to max_mult=3.0 (drift >> enter)
+        assert!(
+            (rd_up.spread_multiplier() - rd_down.spread_multiplier()).abs() < 1e-10,
+            "up={}, down={}",
+            rd_up.spread_multiplier(),
+            rd_down.spread_multiplier()
+        );
+    }
+
+    #[test]
+    fn test_regime_hysteresis() {
+        let mut rd = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        let ns = 1_000_000_000u64;
+
+        // Step 1: Enter trending at 120 bps/hr
+        rd.update(1000.0, 0);
+        rd.update(1000.2, 60 * ns);
+        assert!(rd.is_trending(), "should enter trending");
+
+        // Step 2: Drift drops to ~75 bps/hr (between exit=50 and enter=100) — stays trending.
+        // At t=120s: t=0 evicted, window = [(1000.2, 60s), (?, 120s)].
+        // drift_bps = 75*60/3600 = 1.25; newest = 1000.2 * (1 + 1.25/10000) ≈ 1000.325
+        rd.update(1000.325, 120 * ns);
+        assert!(
+            rd.is_trending(),
+            "hysteresis: drift between exit and enter, should stay trending"
+        );
+
+        // Step 3: Drift drops below exit threshold (< 50 bps/hr) — exits trending.
+        // At t=180s: t=60s evicted, window = [(1000.325, 120s), (?, 180s)].
+        // drift_bps = 18*60/3600 = 0.3; newest = 1000.325 * (1 + 0.3/10000) ≈ 1000.355
+        rd.update(1000.355, 180 * ns);
+        assert!(!rd.is_trending(), "should exit trending when drift < exit threshold");
+        assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_regime_eviction() {
+        let mut rd = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        let ns = 1_000_000_000u64;
+
+        // Establish trending
+        rd.update(1000.0, 0);
+        rd.update(1000.2, 60 * ns); // 120 bps/hr
+        assert!(rd.is_trending());
+
+        // Advance time past window — both prior entries evicted (130s and 70s > 60s window)
+        rd.update(1000.2, 130 * ns);
+        assert!(
+            rd.drift_bps_hr().abs() < 1e-6,
+            "trend data evicted; drift should be 0, got {}",
+            rd.drift_bps_hr()
+        );
+        assert!(!rd.is_trending(), "should exit trending after window clears");
+    }
+
+    #[test]
+    fn test_regime_equal_thresholds_no_nan() {
+        // drift_enter == drift_exit → binary mode: no ramp, no NaN/panic.
+        let mut rd = RegimeDetector::new(60, 100.0, 100.0, 3.0);
+        let ns = 1_000_000_000u64;
+        rd.update(1000.0, 0);
+        rd.update(1000.2, 60 * ns); // 120 bps/hr > 100 → enters trending
+        assert!(rd.is_trending());
+        let mult = rd.spread_multiplier();
+        assert!(mult.is_finite(), "must not produce NaN or infinity: {}", mult);
+        assert!((mult - 3.0).abs() < 1e-10, "binary mode should return max_mult={}", mult);
+    }
+
+    #[test]
+    fn test_regime_single_entry() {
+        let mut rd = RegimeDetector::new(60, 100.0, 50.0, 3.0);
+        rd.update(1000.0, 0);
+        assert!((rd.spread_multiplier() - 1.0).abs() < 1e-10);
+        assert!(rd.drift_bps_hr().abs() < 1e-10);
     }
 }
