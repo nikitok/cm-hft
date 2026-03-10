@@ -25,7 +25,8 @@ build/
 
 # Data
 *.parquet
-data/
+/data/
+!backtest/data/
 .data/
 testdata/
 

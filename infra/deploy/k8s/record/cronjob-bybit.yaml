@@ -24,7 +24,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: recorder
-              image: ghcr.io/nikitok/cm-hft/cm-record:390754a537d88990fe553567798d1c686e705b8c@sha256:a8112fcd609f4b0fd8ca9a16746750f1a68e4bdf008938cdac4e4f5d026f6064
+              image: "ghcr.io/nikitok/cm-hft/cm-record:f7ae38e3afed75d7c80e1235194ebd2964b5a30c@sha256:3f31ba63599dc9efb1c0b6046dcb5766f8255ea5215b1dcaa3f412c2b595cfcc"
               resources:
                 requests:
                   cpu: 100m
