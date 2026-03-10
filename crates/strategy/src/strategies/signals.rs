@@ -394,7 +394,11 @@ mod tests {
         for i in 0..50 {
             tracker.update(true, 1000.0, i as u64);
         }
-        assert!((tracker.imbalance() - 1.0).abs() < 1e-10, "all-buy imbalance={}", tracker.imbalance());
+        assert!(
+            (tracker.imbalance() - 1.0).abs() < 1e-10,
+            "all-buy imbalance={}",
+            tracker.imbalance()
+        );
         assert!((tracker.buy_ratio() - 1.0).abs() < 1e-10);
     }
 
@@ -404,7 +408,11 @@ mod tests {
         for i in 0..50 {
             tracker.update(false, 1000.0, i as u64);
         }
-        assert!((tracker.imbalance() - (-1.0)).abs() < 1e-10, "all-sell imbalance={}", tracker.imbalance());
+        assert!(
+            (tracker.imbalance() - (-1.0)).abs() < 1e-10,
+            "all-sell imbalance={}",
+            tracker.imbalance()
+        );
         assert!((tracker.buy_ratio() - 0.0).abs() < 1e-10);
     }
 
@@ -423,7 +431,11 @@ mod tests {
             tracker.update(true, 1000.0, i as u64);
         }
         assert_eq!(tracker.window_size(), 10);
-        assert!((tracker.imbalance() - 1.0).abs() < 1e-10, "after eviction imbalance={}", tracker.imbalance());
+        assert!(
+            (tracker.imbalance() - 1.0).abs() < 1e-10,
+            "after eviction imbalance={}",
+            tracker.imbalance()
+        );
     }
 
     #[test]

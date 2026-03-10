@@ -2084,8 +2084,16 @@ fn bench_vpin_factor_sweep() {
         println!();
         println!(
             "  {:>4} | {:>11} | {:>6} | {:>7} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8} | {:>7}",
-            "Rank", "vpin_factor", "Fills", "Orders", "Realized$", "M2M PnL$", "Fees$", "Max DD$",
-            "Calmar", "$/fill"
+            "Rank",
+            "vpin_factor",
+            "Fills",
+            "Orders",
+            "Realized$",
+            "M2M PnL$",
+            "Fees$",
+            "Max DD$",
+            "Calmar",
+            "$/fill"
         );
         println!("  {:-<105}", "");
 

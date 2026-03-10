@@ -571,7 +571,10 @@ strategy = "arb_v2"
         );
 
         let cfg = AppConfig::load(None).expect("load with strategy_params env");
-        assert_eq!(cfg.trading.strategy_params, r#"{"reprice_threshold_bps": 12.0}"#);
+        assert_eq!(
+            cfg.trading.strategy_params,
+            r#"{"reprice_threshold_bps": 12.0}"#
+        );
 
         std::env::remove_var("CM_HFT_TRADING__STRATEGY_PARAMS");
     }
@@ -591,6 +594,9 @@ strategy_params = '{"reprice_threshold_bps": 12.0}'
         );
 
         let cfg = AppConfig::load(Some(path)).expect("load from toml with strategy_params");
-        assert_eq!(cfg.trading.strategy_params, r#"{"reprice_threshold_bps": 12.0}"#);
+        assert_eq!(
+            cfg.trading.strategy_params,
+            r#"{"reprice_threshold_bps": 12.0}"#
+        );
     }
 }
