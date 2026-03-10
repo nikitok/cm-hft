@@ -175,6 +175,8 @@ pub struct ReplayTestHarness {
     pending_fills: Vec<Fill>,
     /// Nanosecond timestamp of the last event (for latency activation).
     last_event_ts_ns: u64,
+    /// Monotonic counter of events processed, used for timer interval.
+    event_counter: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +209,8 @@ pub struct SimConfig {
     pub fill_probability: f64,
     /// If true (legacy mode only), fills only when price crosses THROUGH our level.
     pub strict_crossing: bool,
+    /// Number of events between `on_timer` calls. 0 = disabled.
+    pub timer_interval: u64,
 }
 
 impl Default for SimConfig {
@@ -218,6 +222,7 @@ impl Default for SimConfig {
             latency_ns: 0,
             fill_probability: 1.0,
             strict_crossing: true,
+            timer_interval: 0,
         }
     }
 }
@@ -232,6 +237,7 @@ impl SimConfig {
             latency_ns: 0,
             fill_probability: 1.0,
             strict_crossing: true,
+            timer_interval: 0,
         }
     }
 }
@@ -288,6 +294,7 @@ impl ReplayTestHarness {
             fee_total: 0.0,
             pending_fills: Vec::new(),
             last_event_ts_ns: 0,
+            event_counter: 0,
         }
     }
 
@@ -361,6 +368,18 @@ impl ReplayTestHarness {
                     // Process any actions from on_trade.
                     self.process_actions(ctx.drain_actions(), *ts);
                 }
+            }
+
+            // Timer injection: fire on_timer at the configured interval.
+            // CRITICAL: TradingContext must include position data via build_position_vec()
+            // so ctx.net_position() returns the actual position (not 0.0).
+            self.event_counter += 1;
+            let interval = self.sim_config.timer_interval;
+            if interval > 0 && self.event_counter.is_multiple_of(interval) {
+                let ctx_position = self.build_position_vec();
+                let mut timer_ctx = TradingContext::new(ctx_position, vec![], Timestamp(*ts));
+                self.strategy.on_timer(&mut timer_ctx, Timestamp(*ts));
+                self.process_actions(timer_ctx.drain_actions(), *ts);
             }
         }
 

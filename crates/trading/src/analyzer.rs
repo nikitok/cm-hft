@@ -259,11 +259,22 @@ impl SymbolAnalyzer {
         } else {
             0.0
         };
-        let spread_bps_min = if self.spread_count > 0 { self.spread_min } else { 0.0 };
-        let spread_bps_max = if self.spread_count > 0 { self.spread_max } else { 0.0 };
+        let spread_bps_min = if self.spread_count > 0 {
+            self.spread_min
+        } else {
+            0.0
+        };
+        let spread_bps_max = if self.spread_count > 0 {
+            self.spread_max
+        } else {
+            0.0
+        };
 
-        let trade_rate_per_sec =
-            if duration_secs > 0.0 { self.trade_count as f64 / duration_secs } else { 0.0 };
+        let trade_rate_per_sec = if duration_secs > 0.0 {
+            self.trade_count as f64 / duration_secs
+        } else {
+            0.0
+        };
 
         let bid_depth_usd_mean = if self.depth_sample_count > 0 {
             self.bid_depth_usd_sum / self.depth_sample_count as f64
@@ -431,7 +442,12 @@ mod tests {
     fn make_book_with_depth(base_bid: f64, spread: f64, qty_per_level: f64) -> OrderBook {
         let mut book = OrderBook::new(Exchange::Binance, Symbol::new("BTCUSDT"));
         let bids: Vec<_> = (0..5)
-            .map(|i| (Price::from(base_bid - i as f64), Quantity::from(qty_per_level)))
+            .map(|i| {
+                (
+                    Price::from(base_bid - i as f64),
+                    Quantity::from(qty_per_level),
+                )
+            })
             .collect();
         let asks: Vec<_> = (0..5)
             .map(|i| {
@@ -487,11 +503,26 @@ mod tests {
         assert_eq!(report.book_samples, 100);
 
         let expected_bps = book.spread_bps().unwrap();
-        assert!((report.spread_bps_mean - expected_bps).abs() < 1e-6, "mean spread");
-        assert!((report.spread_bps_min - expected_bps).abs() < 1e-6, "min spread");
-        assert!((report.spread_bps_max - expected_bps).abs() < 1e-6, "max spread");
-        assert!((report.spread_bps_p50 - expected_bps).abs() < 1e-4, "p50 spread");
-        assert!((report.spread_bps_p95 - expected_bps).abs() < 1e-4, "p95 spread");
+        assert!(
+            (report.spread_bps_mean - expected_bps).abs() < 1e-6,
+            "mean spread"
+        );
+        assert!(
+            (report.spread_bps_min - expected_bps).abs() < 1e-6,
+            "min spread"
+        );
+        assert!(
+            (report.spread_bps_max - expected_bps).abs() < 1e-6,
+            "max spread"
+        );
+        assert!(
+            (report.spread_bps_p50 - expected_bps).abs() < 1e-4,
+            "p50 spread"
+        );
+        assert!(
+            (report.spread_bps_p95 - expected_bps).abs() < 1e-4,
+            "p95 spread"
+        );
     }
 
     // ─── Test 3: Trade accumulation ──────────────────────────────────────────
@@ -535,11 +566,14 @@ mod tests {
             .sum();
 
         analyzer.on_book_update(&book);
-        let report = analyzer.report(Duration::from_secs(60), &Thresholds {
-            min_trade_rate: 0.0, // allow no trades
-            min_depth_usd: 0.0,
-            ..Default::default()
-        });
+        let report = analyzer.report(
+            Duration::from_secs(60),
+            &Thresholds {
+                min_trade_rate: 0.0, // allow no trades
+                min_depth_usd: 0.0,
+                ..Default::default()
+            },
+        );
 
         // mean_bid_depth == single sample value
         assert!(
@@ -605,7 +639,7 @@ mod tests {
         }
 
         let thresholds = Thresholds {
-            max_spread_bps: 1000.0,    // very relaxed
+            max_spread_bps: 1000.0, // very relaxed
             min_trade_rate: 0.0,
             min_depth_usd: 0.0,
             max_volatility_bps: 10000.0,
@@ -631,7 +665,7 @@ mod tests {
         }
 
         let thresholds = Thresholds {
-            max_spread_bps: 5.0,        // far below actual 2222 bps
+            max_spread_bps: 5.0, // far below actual 2222 bps
             min_trade_rate: 0.0,
             min_depth_usd: 0.0,
             max_volatility_bps: 10000.0,
@@ -704,16 +738,20 @@ mod tests {
         let relaxed = Thresholds {
             max_spread_bps: 1000.0,
             min_trade_rate: 0.0,
-            min_depth_usd: 0.0,       // 0 → always passes
+            min_depth_usd: 0.0, // 0 → always passes
             max_volatility_bps: 10000.0,
         };
 
         let report_relaxed = analyzer.report(Duration::from_secs(10), &relaxed);
-        assert_eq!(report_relaxed.verdict, AnalysisVerdict::Go, "relaxed should be Go");
+        assert_eq!(
+            report_relaxed.verdict,
+            AnalysisVerdict::Go,
+            "relaxed should be Go"
+        );
 
         // Tight thresholds should fail.
         let tight = Thresholds {
-            max_spread_bps: 0.0001,   // impossibly tight
+            max_spread_bps: 0.0001, // impossibly tight
             min_trade_rate: 0.0,
             min_depth_usd: 0.0,
             max_volatility_bps: 10000.0,

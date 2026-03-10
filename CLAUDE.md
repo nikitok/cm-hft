@@ -104,4 +104,4 @@ Entry point: `backtest/engine/orchestrator.py`. Loads historical Parquet data, r
 
 ## Issue Tracking
 
-This project uses **bd** (beads) for issue tracking. Run `bd ready` to find available work, `bd show <id>` for details, `bd update <id> --status in_progress` to claim, `bd close <id>` when done, `bd sync` at session end. See AGENTS.md for the full session completion checklist.
+This project uses **Linear** for issue tracking. See the `nikitok-linear-spec-workflow` rule for the full workflow: Linear issues map to `/spec` plans, sub-issues to plan tasks, one PR per epic.

@@ -5,7 +5,8 @@
 //! sequencing for gap detection.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures_util::SinkExt;
@@ -25,6 +26,10 @@ const BYBIT_TESTNET_WS_URL: &str = "wss://stream-testnet.bybit.com/v5/public/lin
 
 /// Ping interval for Bybit WebSocket keep-alive.
 const PING_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Maximum time to wait for an initial orderbook snapshot after subscribing.
+/// If no snapshot arrives within this window, force a reconnection.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Configuration for the Bybit WebSocket client.
 ///
@@ -94,6 +99,8 @@ impl BybitWsClient {
             book_tx,
             trade_tx,
             seq_tracker: HashMap::new(),
+            subscribe_time: None,
+            delta_drop_count: AtomicU64::new(0),
         };
 
         conn.run(&mut handler).await
@@ -115,6 +122,10 @@ struct BybitHandler {
     book_tx: tokio::sync::mpsc::Sender<BookUpdate>,
     trade_tx: tokio::sync::mpsc::Sender<Trade>,
     seq_tracker: HashMap<String, SymbolSeqState>,
+    /// When the subscribe request was sent; used for snapshot watchdog.
+    subscribe_time: Option<Instant>,
+    /// Count of dropped deltas (pre-snapshot); used to throttle warnings.
+    delta_drop_count: AtomicU64,
 }
 
 impl BybitHandler {
@@ -189,6 +200,9 @@ impl BybitHandler {
         if is_snapshot {
             state.last_seq = ob.seq;
             state.initialized = true;
+            // Snapshot received — clear watchdog.
+            self.subscribe_time = None;
+            self.delta_drop_count.store(0, Ordering::Relaxed);
         } else if state.initialized {
             let expected = state.last_seq + 1;
             if ob.seq != expected {
@@ -201,10 +215,32 @@ impl BybitHandler {
             }
             state.last_seq = ob.seq;
         } else {
-            tracing::debug!(
-                symbol = %ob.s,
-                "ignoring delta before initial snapshot"
-            );
+            let count = self.delta_drop_count.fetch_add(1, Ordering::Relaxed);
+            // Log first drop and every 100th thereafter to avoid spam.
+            if count == 0 || count.is_multiple_of(100) {
+                tracing::warn!(
+                    symbol = %ob.s,
+                    dropped = count + 1,
+                    "dropping delta before initial snapshot"
+                );
+            }
+            // Watchdog: if >30s since subscribe and still no snapshot, force reconnect.
+            if let Some(sub_time) = self.subscribe_time {
+                if sub_time.elapsed() > SNAPSHOT_TIMEOUT {
+                    let elapsed = sub_time.elapsed();
+                    tracing::error!(
+                        symbol = %ob.s,
+                        elapsed_secs = elapsed.as_secs(),
+                        dropped = count + 1,
+                        "no orderbook snapshot received after subscribe — forcing reconnect"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "snapshot watchdog: no snapshot for {} after {:.0}s",
+                        ob.s,
+                        elapsed.as_secs_f64()
+                    ));
+                }
+            }
             return Ok(());
         }
 
@@ -243,7 +279,11 @@ impl WsHandler for BybitHandler {
     async fn on_connect(&mut self, sink: &mut WsSink) -> Result<()> {
         // Reset sequence tracking on reconnect.
         self.seq_tracker.clear();
-        self.send_subscribe(sink).await
+        self.delta_drop_count.store(0, Ordering::Relaxed);
+        self.send_subscribe(sink).await?;
+        // Start snapshot watchdog timer.
+        self.subscribe_time = Some(Instant::now());
+        Ok(())
     }
 
     async fn on_message(&mut self, msg: Message) -> Result<()> {

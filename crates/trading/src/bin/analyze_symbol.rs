@@ -85,7 +85,10 @@ fn parse_snapshot_levels(
                 tracing::warn!(price = p, qty = q, "skipping zero-value snapshot level");
                 return None;
             }
-            Some((cm_core::types::Price::from(p), cm_core::types::Quantity::from(q)))
+            Some((
+                cm_core::types::Price::from(p),
+                cm_core::types::Quantity::from(q),
+            ))
         })
         .collect()
 }
@@ -171,10 +174,7 @@ async fn run_ws_feed(
 ///
 /// Returns the initialized book and the `last_update_id` (used as the starting
 /// value for the monotonic update counter).
-async fn init_order_book(
-    client: &BinanceWsClient,
-    symbol: &str,
-) -> Result<(OrderBook, u64)> {
+async fn init_order_book(client: &BinanceWsClient, symbol: &str) -> Result<(OrderBook, u64)> {
     let mut last_err = anyhow::anyhow!("snapshot fetch never attempted");
     for attempt in 1..=3u32 {
         match client.fetch_snapshot(symbol).await {

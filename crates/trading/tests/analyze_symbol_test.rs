@@ -59,14 +59,23 @@ fn test_full_pipeline_synthetic_data() {
     assert_eq!(report.book_samples, 300, "book samples");
     assert_eq!(report.trade_count, 30, "trade count");
     assert!(report.spread_bps_mean > 0.0, "spread should be positive");
-    assert!(report.bid_depth_usd_mean > 0.0, "bid depth should be positive");
-    assert!(report.ask_depth_usd_mean > 0.0, "ask depth should be positive");
+    assert!(
+        report.bid_depth_usd_mean > 0.0,
+        "bid depth should be positive"
+    );
+    assert!(
+        report.ask_depth_usd_mean > 0.0,
+        "ask depth should be positive"
+    );
     assert!(
         report.bid_ask_imbalance_mean >= 0.0 && report.bid_ask_imbalance_mean <= 1.0,
         "imbalance should be in [0, 1]"
     );
     assert!(report.duration_secs > 0.0, "duration should be positive");
-    assert!(report.trade_rate_per_sec > 0.0, "trade rate should be positive");
+    assert!(
+        report.trade_rate_per_sec > 0.0,
+        "trade rate should be positive"
+    );
     assert!(report.trade_volume_usd > 0.0, "volume should be positive");
 }
 
@@ -84,11 +93,20 @@ fn test_report_json_roundtrip() {
     assert!(!json.is_empty());
 
     // Verify JSON contains expected fields.
-    assert!(json.contains("\"book_samples\""), "JSON missing book_samples");
+    assert!(
+        json.contains("\"book_samples\""),
+        "JSON missing book_samples"
+    );
     assert!(json.contains("\"trade_count\""), "JSON missing trade_count");
     assert!(json.contains("\"verdict\""), "JSON missing verdict");
-    assert!(json.contains("\"spread_bps_mean\""), "JSON missing spread_bps_mean");
-    assert!(json.contains("\"bid_depth_usd_mean\""), "JSON missing bid_depth_usd_mean");
+    assert!(
+        json.contains("\"spread_bps_mean\""),
+        "JSON missing spread_bps_mean"
+    );
+    assert!(
+        json.contains("\"bid_depth_usd_mean\""),
+        "JSON missing bid_depth_usd_mean"
+    );
 
     // Deserialize back and verify numeric fields match.
     let deserialized: AnalysisReport = serde_json::from_str(&json).expect("deserialize report");
@@ -164,14 +182,18 @@ fn test_verdict_go_with_relaxed_thresholds() {
     simulate_30s(&mut analyzer);
 
     let relaxed = Thresholds {
-        max_spread_bps: 10000.0,   // far above any realistic spread
+        max_spread_bps: 10000.0, // far above any realistic spread
         min_trade_rate: 0.0,
         min_depth_usd: 0.0,
         max_volatility_bps: 10000.0,
     };
 
     let report = analyzer.report(Duration::from_secs(30), &relaxed);
-    assert_eq!(report.verdict, AnalysisVerdict::Go, "relaxed thresholds should produce Go");
+    assert_eq!(
+        report.verdict,
+        AnalysisVerdict::Go,
+        "relaxed thresholds should produce Go"
+    );
 }
 
 // ─── Integration Test 7: Consecutive book updates accumulate correctly ────────
