@@ -227,8 +227,8 @@ class TestBacktestOrchestrator:
         """run_single() returns a BacktestResult with non-empty series."""
         result = orchestrator.run_single(BacktestParams(), num_events=500)
         assert isinstance(result, BacktestResult)
-        assert len(result.pnl_series) == 499
-        assert len(result.timestamp_series) == 499
+        assert len(result.pnl_series) == 500
+        assert len(result.timestamp_series) == 500
         assert result.duration_seconds > 0
 
     def test_run_single_deterministic(self, orchestrator):

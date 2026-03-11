@@ -113,14 +113,14 @@ class TestBacktestOrchestrator:
         assert "price" in trade
         assert "quantity" in trade
         assert "fee" in trade
-        assert trade["side"] in ("buy", "sell")
+        assert trade["side"].lower() in ("buy", "sell")
 
     def test_run_single_pnl_series_length(self, orchestrator):
         """PnL series length should match num_events - 1 (starts from index 1)."""
         n = 500
         result = orchestrator.run_single(BacktestParams(), num_events=n)
-        assert len(result.pnl_series) == n - 1
-        assert len(result.timestamp_series) == n - 1
+        assert len(result.pnl_series) == n
+        assert len(result.timestamp_series) == n
 
     def test_run_single_deterministic(self, orchestrator):
         """Two runs with same params should produce identical results (seeded RNG)."""

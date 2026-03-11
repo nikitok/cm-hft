@@ -266,6 +266,10 @@ class BacktestOrchestrator:
         fill_count = 0
         max_pos = 0.0
 
+        # Initial state at t=0 (matches Rust engine which includes event 0)
+        pnl_series.append(0.0)
+        timestamp_series.append(0)
+
         for i in range(1, num_events):
             mid = float(prices[i])
             prev_mid = float(prices[i - 1])
